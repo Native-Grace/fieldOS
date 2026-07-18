@@ -1,0 +1,33 @@
+name: nativegrace-fieldos
+
+services:
+  api:
+    build: ./backend
+    env_file:
+      - .env
+    environment:
+      AUTH_USERS_FILE: /data/auth_users.json
+      MOCK_DATA_DIR: /data/mock
+      LOCAL_RECORDINGS_DIR: /data/recordings
+    volumes:
+      - fieldos_data:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  fieldos_data:

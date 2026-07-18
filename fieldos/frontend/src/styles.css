@@ -1,0 +1,225 @@
+:root {
+  --bg: #e8efe9;
+  --bg-accent: #d4e3d7;
+  --surface: #f7faf7;
+  --ink: #1b2a22;
+  --muted: #5c6f64;
+  --brand: #1b3a2f;
+  --brand-2: #2f6b4f;
+  --danger: #9b2c2c;
+  --warn: #8a5a00;
+  --ok: #1f6b3a;
+  --radius: 16px;
+  --shadow: 0 8px 28px rgba(27, 58, 47, 0.12);
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #c9ddcf 0%, transparent 55%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-accent) 100%);
+  color: var(--ink);
+}
+
+button, input {
+  font: inherit;
+}
+
+.app-shell {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  padding: 16px 16px 32px;
+}
+
+.brand {
+  font-size: 1.65rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: var(--brand);
+  margin: 8px 0 4px;
+}
+
+.sub {
+  color: var(--muted);
+  margin: 0 0 18px;
+  line-height: 1.4;
+}
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  margin-bottom: 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.field label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.field input {
+  border: 1px solid #c5d2c8;
+  border-radius: 12px;
+  padding: 14px 12px;
+  background: #fff;
+}
+
+.btn {
+  width: 100%;
+  border: none;
+  border-radius: 12px;
+  padding: 14px 16px;
+  font-weight: 700;
+  cursor: pointer;
+  margin: 6px 0;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary { background: var(--brand-2); color: #fff; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-dark { background: #243028; color: #fff; }
+.btn-ghost { background: #dfe8e1; color: var(--ink); }
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.topbar h1 {
+  font-size: 1.25rem;
+  margin: 0;
+  color: var(--brand);
+}
+
+.job-row {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+  margin-bottom: 10px;
+}
+
+.job-row:active { transform: scale(0.99); }
+
+.job-id {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.job-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 4px 0;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: #d7e5db;
+  color: var(--brand);
+}
+
+.badge.failed { background: #f4d6d6; color: var(--danger); }
+.badge.queued, .badge.processing { background: #f3e6c8; color: var(--warn); }
+.badge.completed { background: #d5ecdc; color: var(--ok); }
+
+.error-box {
+  background: #f8e8e8;
+  color: var(--danger);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 10px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.warn-box {
+  background: #fff4d9;
+  color: var(--warn);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 10px 0;
+  font-size: 0.9rem;
+}
+
+.timer {
+  font-size: 2.6rem;
+  font-weight: 800;
+  text-align: center;
+  letter-spacing: 0.04em;
+  margin: 12px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress {
+  height: 10px;
+  background: #d5e0d8;
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 10px 0;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--brand-2);
+  width: 0%;
+  transition: width 0.15s ease;
+}
+
+.status-line {
+  text-align: center;
+  color: var(--muted);
+  min-height: 1.4em;
+  margin: 8px 0 12px;
+}
+
+audio {
+  width: 100%;
+  margin: 10px 0;
+}
+
+.list-item {
+  border-top: 1px solid #d7e1da;
+  padding: 10px 0;
+  font-size: 0.92rem;
+}
+
+.muted { color: var(--muted); }
+.small { font-size: 0.82rem; }

@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .env.*
+!.env.example
 __pycache__/
 *.pyc
 node_modules/
@@ -8,3 +9,8 @@ dist/
 build/
 .venv/
 venv/
+.pytest_cache/
+fieldos/backend/.venv/
+fieldos/data/
+fieldos/backend/data/
+*.webm
