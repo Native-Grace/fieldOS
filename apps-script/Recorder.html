@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 18px;
+      max-width: 520px;
+      margin: auto;
+      background: #f7f7f7;
+    }
+
+    .card {
+      background: white;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+
+    h2 {
+      margin-top: 0;
+      color: #234;
+    }
+
+    .status {
+      margin: 14px 0;
+      padding: 12px;
+      border-radius: 8px;
+      background: #eef3ee;
+      font-size: 15px;
+    }
+
+    .timer {
+      font-size: 38px;
+      font-weight: bold;
+      text-align: center;
+      margin: 18px 0;
+    }
+
+    button {
+      width: 100%;
+      padding: 16px;
+      margin: 8px 0;
+      font-size: 18px;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+    }
+
+    .record {
+      background: #b3261e;
+      color: white;
+    }
+
+    .stop {
+      background: #333;
+      color: white;
+    }
+
+    .save {
+      background: #2e7d32;
+      color: white;
+    }
+
+    .secondary {
+      background: #ddd;
+      color: #222;
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    audio {
+      width: 100%;
+      margin-top: 14px;
+    }
+
+    .small {
+      font-size: 13px;
+      color: #666;
+      word-break: break-all;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h2>Native Grace Voice Note</h2>
+
+    <div class="small">
+      Job Sheet ID:<br>
+      <strong><?= jobSheetId ?></strong>
+    </div>
+
+    <div class="status" id="statusBox">
+      Ready. Press Record to start.
+    </div>
+
+    <div class="timer" id="timer">00:00</div>
+
+    <button class="record" id="recordBtn" onclick="startRecording()">Record</button>
+    <button class="stop" id="stopBtn" onclick="stopRecording()" disabled>Stop</button>
+    <button class="save" id="saveBtn" onclick="saveRecording()" disabled>Save Recording</button>
+    <button class="secondary" onclick="resetRecorder()">Add Another Recording</button>
+
+    <audio id="audioPlayback" controls style="display:none;"></audio>
+
+    <button class="secondary" onclick="goBack()">Back to Job Sheet</button>
+  </div>
+
+  <script>
+    const JOB_SHEET_ID = "<?= jobSheetId ?>";
+    const USER_IDENTITY = "<?= userIdentity ?>";
+    const RETURN_URL = "<?= returnUrl ?>";
+
+    let mediaRecorder;
+    let audioChunks = [];
+    let recordedBlob;
+    let startTime;
+    let timerInterval;
+    let durationSeconds = 0;
+
+    const recordBtn = document.getElementById("recordBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const saveBtn = document.getElementById("saveBtn");
+    const statusBox = document.getElementById("statusBox");
+    const timer = document.getElementById("timer");
+    const audioPlayback = document.getElementById("audioPlayback");
+
+    function setStatus(message) {
+      statusBox.textContent = message;
+    }
+
+    function updateTimer() {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      durationSeconds = elapsed;
+      const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
+      const secs = String(elapsed % 60).padStart(2, "0");
+      timer.textContent = `${mins}:${secs}`;
+    }
+
+    async function startRecording() {
+      if (!JOB_SHEET_ID) {
+        alert("Missing job sheet ID.");
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        audioChunks = [];
+        recordedBlob = null;
+
+        mediaRecorder = new MediaRecorder(stream, {
+          mimeType: "audio/webm"
+        });
+
+        mediaRecorder.ondataavailable = event => {
+          if (event.data.size > 0) {
+            audioChunks.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = () => {
+          recordedBlob = new Blob(audioChunks, { type: "audio/webm" });
+          const audioUrl = URL.createObjectURL(recordedBlob);
+          audioPlayback.src = audioUrl;
+          audioPlayback.style.display = "block";
+          saveBtn.disabled = false;
+          setStatus("Recording stopped. Press Save Recording.");
+        };
+
+        mediaRecorder.start();
+
+        startTime = Date.now();
+        timerInterval = setInterval(updateTimer, 500);
+        updateTimer();
+
+        recordBtn.disabled = true;
+        stopBtn.disabled = false;
+        saveBtn.disabled = true;
+
+        setStatus("Recording...");
+
+      } catch (err) {
+        setStatus("Microphone error: " + err.message);
+        alert("Could not access microphone. Check browser permissions.");
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      }
+
+      clearInterval(timerInterval);
+
+      recordBtn.disabled = false;
+      stopBtn.disabled = true;
+    }
+
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result;
+          const base64 = result.split(",")[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function saveRecording() {
+      if (!recordedBlob) {
+        alert("No recording to save.");
+        return;
+      }
+
+      saveBtn.disabled = true;
+      setStatus("Saving recording...");
+
+      const audioBase64 = await blobToBase64(recordedBlob);
+
+      const payload = {
+        job_sheet_id: JOB_SHEET_ID,
+        user_identity: USER_IDENTITY,
+        duration_seconds: durationSeconds,
+        audio_base64: audioBase64
+      };
+
+      google.script.run
+        .withSuccessHandler(result => {
+          if (result.status === "Success") {
+            setStatus("Saved recording " + result.recording_order + ".");
+            alert("Recording saved.");
+          } else {
+            setStatus("Save failed: " + result.message);
+            saveBtn.disabled = false;
+          }
+        })
+        .withFailureHandler(error => {
+          setStatus("Save failed: " + error.message);
+          saveBtn.disabled = false;
+        })
+        .saveRecording(payload);
+    }
+
+    function resetRecorder() {
+      audioChunks = [];
+      recordedBlob = null;
+      durationSeconds = 0;
+      timer.textContent = "00:00";
+      audioPlayback.style.display = "none";
+      audioPlayback.src = "";
+      recordBtn.disabled = false;
+      stopBtn.disabled = true;
+      saveBtn.disabled = true;
+      setStatus("Ready. Press Record to start another note.");
+    }
+
+    function goBack() {
+      if (RETURN_URL) {
+        window.location.href = RETURN_URL;
+      } else {
+        setStatus("Recording saved. You can return to AppSheet.");
+      }
+    }
+  </script>
+</body>
+</html>
