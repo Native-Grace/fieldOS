@@ -36,15 +36,18 @@ def auth_store(settings: Settings = Depends(get_settings)) -> AuthUserStore:
 
 
 def _job_summary(job: dict, settings: Settings) -> JobSummary:
-    raw_date = job.get(settings.job_date_column)
+    raw_date = job.get(settings.job_date_column) or job.get("job_date")
     job_date = None
     if raw_date:
-        job_date = date.fromisoformat(str(raw_date)[:10])
+        try:
+            job_date = date.fromisoformat(str(raw_date)[:10])
+        except ValueError:
+            job_date = None
     return JobSummary(
         job_sheet_id=str(job.get("job_sheet_id", "")),
         job_date=job_date,
-        project_name=str(job.get(settings.job_project_column, "") or ""),
-        customer_name=str(job.get(settings.job_customer_column, "") or ""),
+        project_name=str(job.get(settings.job_project_column) or job.get("project_name") or ""),
+        customer_name=str(job.get(settings.job_customer_column) or job.get("customer_name") or ""),
         processing_status=str(job.get("processing_status", "") or ""),
         approval_status=str(job.get("approval_status", "") or ""),
         processing_error=str(job.get("processing_error", "") or ""),
@@ -62,19 +65,31 @@ def health(settings: Settings = Depends(get_settings)) -> HealthResponse:
 
 @router.get("/ready", response_model=ReadyResponse)
 def ready(settings: Settings = Depends(get_settings)) -> ReadyResponse:
+    mode = (settings.data_mode or "mock").strip().lower()
+    apps_configured = bool(settings.apps_script_webapp_url and settings.apps_script_webhook_secret)
+    drive_configured = bool(settings.recordings_folder_id and settings.google_application_credentials)
     checks = {
         "auth_store": True,
-        "data_mode_mock": settings.data_mode == "mock",
-        "apps_script_configured": bool(settings.apps_script_webapp_url and settings.apps_script_webhook_secret),
+        "data_mode_mock": mode == "mock",
+        "data_mode_apps_script": mode == "apps_script",
+        "apps_script_configured": apps_configured,
+        "drive_upload_configured": drive_configured,
         "jwt_secret_set": bool(settings.jwt_secret) and settings.jwt_secret != "dev-only-change-me",
     }
-    # Ready for local mock if auth works; apps script optional
-    ok = checks["auth_store"] and settings.data_mode in ("mock", "sheets")
+    if mode == "mock":
+        ok = checks["auth_store"]
+        message = "Ready for local mock mode"
+    elif mode == "apps_script":
+        ok = checks["auth_store"] and apps_configured
+        message = "Ready for apps_script mode" if ok else "apps_script mode missing URL/secret"
+    else:
+        ok = False
+        message = f"Unsupported DATA_MODE={settings.data_mode}"
     return ReadyResponse(
         status="ok" if ok else "degraded",
         data_mode=settings.data_mode,
         checks=checks,
-        message="Ready for local mock mode" if ok else "Not ready",
+        message=message,
     )
 
 
@@ -131,13 +146,13 @@ def me(
 
 
 @router.get("/jobs/mine", response_model=JobListResponse)
-def jobs_mine(
+async def jobs_mine(
     days: Optional[int] = Query(default=None, ge=1, le=90),
     claims: dict = Depends(get_current_claims),
     settings: Settings = Depends(get_settings),
     service: JobService = Depends(job_service),
 ) -> JobListResponse:
-    jobs, day_count = service.list_mine(str(claims["sub"]), days)
+    jobs, day_count = await service.list_mine(str(claims["sub"]), days)
     return JobListResponse(
         items=[_job_summary(j, settings) for j in jobs],
         days=day_count,
@@ -147,14 +162,14 @@ def jobs_mine(
 
 
 @router.get("/jobs/{job_sheet_id}", response_model=JobDetailResponse)
-def job_detail(
+async def job_detail(
     job_sheet_id: str,
     claims: dict = Depends(get_current_claims),
     settings: Settings = Depends(get_settings),
     service: JobService = Depends(job_service),
 ) -> JobDetailResponse:
-    job = service.get_job_for_staff(job_sheet_id, str(claims["sub"]))
-    recordings = service.list_recordings(job_sheet_id, str(claims["sub"]))
+    job = await service.get_job_for_staff(job_sheet_id, str(claims["sub"]))
+    recordings = await service.list_recordings(job_sheet_id, str(claims["sub"]))
     return JobDetailResponse(
         job=_job_summary(job, settings),
         recordings=[RecordingOut.model_validate(r) for r in recordings],
@@ -166,12 +181,12 @@ def job_detail(
 
 
 @router.get("/jobs/{job_sheet_id}/recordings", response_model=list[RecordingOut])
-def job_recordings(
+async def job_recordings(
     job_sheet_id: str,
     claims: dict = Depends(get_current_claims),
     service: JobService = Depends(job_service),
 ) -> list[RecordingOut]:
-    recordings = service.list_recordings(job_sheet_id, str(claims["sub"]))
+    recordings = await service.list_recordings(job_sheet_id, str(claims["sub"]))
     return [RecordingOut.model_validate(r) for r in recordings]
 
 

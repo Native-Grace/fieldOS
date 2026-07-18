@@ -1,12 +1,20 @@
-"""Basic API tests for Phase 1 (mock mode)."""
+"""Phase 1 mock + Phase 2 Apps Script mode API tests (HTTP mocked)."""
 
 from __future__ import annotations
 
 import io
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+
+
+def _clear_settings():
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
 
 
 @pytest.fixture()
@@ -18,19 +26,17 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("LOCAL_RECORDINGS_DIR", str(tmp_path / "recordings"))
     monkeypatch.setenv("DEMO_STAFF_EMAIL", "alex@nativegrace.com")
     monkeypatch.setenv("DEMO_STAFF_PASSWORD", "FieldOS-Demo-2026!")
+    monkeypatch.setenv("DEMO_STAFF_ID", "STAFF-DEMO001")
     monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", "")
     monkeypatch.setenv("APPS_SCRIPT_WEBHOOK_SECRET", "")
-
-    from app.core.config import get_settings
-
-    get_settings.cache_clear()
+    monkeypatch.setenv("MAX_UPLOAD_MB", "25")
+    _clear_settings()
 
     from app.main import app
 
     with TestClient(app) as c:
         yield c
-
-    get_settings.cache_clear()
+    _clear_settings()
 
 
 def _login(client: TestClient) -> str:
@@ -40,6 +46,31 @@ def _login(client: TestClient) -> str:
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["access_token"]
+
+
+def _mock_response(payload: dict, status_code: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        json=payload,
+        request=httpx.Request("POST", "https://script.example/exec"),
+    )
+
+
+def _patch_async_client(return_values):
+    """Patch httpx.AsyncClient used inside AppsScriptClient._post."""
+    values = list(return_values) if isinstance(return_values, (list, tuple)) else [return_values]
+    mock_instance = AsyncMock()
+    mock_instance.__aenter__.return_value = mock_instance
+    mock_instance.__aexit__.return_value = False
+
+    async def _post(*_args, **_kwargs):
+        item = values.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    mock_instance.post = AsyncMock(side_effect=_post)
+    return patch("app.services.apps_script.httpx.AsyncClient", return_value=mock_instance)
 
 
 def test_health(client: TestClient) -> None:
@@ -61,14 +92,12 @@ def test_login_and_my_jobs(client: TestClient) -> None:
     body = resp.json()
     assert body["days"] == 7
     assert len(body["items"]) >= 1
-    # Jobs older than 7 days or other staff should be excluded from seed (JS-DEMO5 is day 10)
     ids = {j["job_sheet_id"] for j in body["items"]}
     assert "JS-DEMO5" not in ids
 
 
 def test_job_detail_forbidden_for_other_staff(client: TestClient) -> None:
     token = _login(client)
-    # JS-DEMO5 assigned to STAFF-OTHER in seed
     resp = client.get("/api/v1/jobs/JS-DEMO5", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code in (403, 404)
 
@@ -109,6 +138,287 @@ def test_reject_empty_upload(client: TestClient) -> None:
     assert resp.status_code == 400
 
 
+def test_reject_bad_mime(client: TestClient) -> None:
+    token = _login(client)
+    jobs = client.get("/api/v1/jobs/mine", headers={"Authorization": f"Bearer {token}"}).json()["items"]
+    job_id = jobs[0]["job_sheet_id"]
+    resp = client.post(
+        f"/api/v1/jobs/{job_id}/recordings",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("note.txt", io.BytesIO(b"not-audio"), "text/plain")},
+        data={"duration_seconds": "1"},
+    )
+    assert resp.status_code == 400
+
+
+def test_reject_oversized_upload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATA_MODE", "mock")
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("AUTH_USERS_FILE", str(tmp_path / "auth_users.json"))
+    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path / "mock"))
+    monkeypatch.setenv("LOCAL_RECORDINGS_DIR", str(tmp_path / "recordings"))
+    monkeypatch.setenv("DEMO_STAFF_EMAIL", "alex@nativegrace.com")
+    monkeypatch.setenv("DEMO_STAFF_PASSWORD", "FieldOS-Demo-2026!")
+    monkeypatch.setenv("DEMO_STAFF_ID", "STAFF-DEMO001")
+    monkeypatch.setenv("MAX_UPLOAD_MB", "0")
+    monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", "")
+    monkeypatch.setenv("APPS_SCRIPT_WEBHOOK_SECRET", "")
+    _clear_settings()
+
+    from app.main import app
+
+    with TestClient(app) as c:
+        token = _login(c)
+        jobs = c.get("/api/v1/jobs/mine", headers={"Authorization": f"Bearer {token}"}).json()["items"]
+        job_id = jobs[0]["job_sheet_id"]
+        resp = c.post(
+            f"/api/v1/jobs/{job_id}/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("note.webm", io.BytesIO(b"12345"), "audio/webm")},
+            data={"duration_seconds": "1"},
+        )
+        assert resp.status_code == 400
+    _clear_settings()
+
+
 def test_login_failure(client: TestClient) -> None:
     resp = client.post("/api/v1/auth/login", json={"email": "alex@nativegrace.com", "password": "wrong"})
     assert resp.status_code == 401
+
+
+@pytest.fixture()
+def apps_script_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DATA_MODE", "apps_script")
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("AUTH_USERS_FILE", str(tmp_path / "auth_users.json"))
+    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path / "mock"))
+    monkeypatch.setenv("LOCAL_RECORDINGS_DIR", str(tmp_path / "recordings"))
+    monkeypatch.setenv("DEMO_STAFF_EMAIL", "alex@nativegrace.com")
+    monkeypatch.setenv("DEMO_STAFF_PASSWORD", "FieldOS-Demo-2026!")
+    monkeypatch.setenv("DEMO_STAFF_ID", "STAFF-DEMO001")
+    monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", "https://script.example/macros/s/fake/exec")
+    monkeypatch.setenv("APPS_SCRIPT_WEBHOOK_SECRET", "test-webhook-secret")
+    monkeypatch.setenv("APPS_SCRIPT_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("RECORDINGS_FOLDER_ID", "folder123")
+    sa = tmp_path / "sa.json"
+    sa.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(sa))
+    monkeypatch.setenv("MAX_UPLOAD_MB", "25")
+    _clear_settings()
+    from app.main import app
+
+    with TestClient(app) as c:
+        yield c
+    _clear_settings()
+
+
+def test_apps_script_list_jobs_success(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    payload = {
+        "status": "Success",
+        "action": "list_jobs_for_staff",
+        "message": "OK",
+        "record_id": None,
+        "timestamp": "2026-07-18T00:00:00Z",
+        "data": {
+            "jobs": [
+                {
+                    "job_sheet_id": "JS-REAL001",
+                    "job_date": "2026-07-17",
+                    "project_name": "Site A",
+                    "customer_name": "Acme",
+                    "processing_status": "Queued",
+                    "approval_status": "",
+                    "processing_error": "",
+                    "assigned_staff_id": "STAFF-DEMO001",
+                }
+            ],
+            "days": 7,
+        },
+    }
+    with _patch_async_client([_mock_response(payload)]):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data_mode"] == "apps_script"
+    assert body["items"][0]["job_sheet_id"] == "JS-REAL001"
+    assert body["items"][0]["customer_name"] == "Acme"
+    assert "test-webhook-secret" not in resp.text
+
+
+def test_apps_script_invalid_response(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    bad = httpx.Response(200, text="not-json", request=httpx.Request("POST", "https://script.example"))
+    with _patch_async_client([bad]):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 502
+
+
+def test_apps_script_timeout(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    with _patch_async_client([httpx.TimeoutException("timeout")]):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 504
+
+
+def test_apps_script_auth_failure(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    payload = {
+        "status": "Error",
+        "action": "list_jobs_for_staff",
+        "message": "Unauthorized: Invalid or missing webhook_secret.",
+        "record_id": None,
+        "timestamp": "2026-07-18T00:00:00Z",
+    }
+    with _patch_async_client([_mock_response(payload)]):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 502
+    assert "test-webhook-secret" not in resp.text
+
+
+def test_apps_script_unauthorised_job(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    payload = {
+        "status": "Error",
+        "action": "get_job_detail",
+        "message": "Forbidden: Job is not assigned to this staff member.",
+        "record_id": "JS-OTHER",
+        "timestamp": "2026-07-18T00:00:00Z",
+    }
+    with _patch_async_client([_mock_response(payload)]):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/JS-OTHER",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 403
+
+
+def test_apps_script_process_success(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    detail_payload = {
+        "status": "Success",
+        "action": "get_job_detail",
+        "message": "OK",
+        "record_id": "JS-REAL001",
+        "data": {
+            "job": {
+                "job_sheet_id": "JS-REAL001",
+                "job_date": "2026-07-17",
+                "project_name": "Site A",
+                "customer_name": "Acme",
+                "processing_status": "",
+                "assigned_staff_id": "STAFF-DEMO001",
+            },
+            "recordings": [],
+        },
+    }
+    process_payload = {
+        "status": "Success",
+        "action": "process_voice_dictation",
+        "message": "Job successfully queued.",
+        "record_id": "JS-REAL001",
+        "timestamp": "2026-07-18T00:00:00Z",
+    }
+    with _patch_async_client([_mock_response(detail_payload), _mock_response(process_payload)]):
+        resp = apps_script_env.post(
+            "/api/v1/jobs/JS-REAL001/process",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"force_reprocess": False},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "Success"
+    assert "queued" in body["message"].lower()
+
+
+def test_apps_script_process_failure(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    detail_payload = {
+        "status": "Success",
+        "action": "get_job_detail",
+        "message": "OK",
+        "data": {
+            "job": {
+                "job_sheet_id": "JS-REAL001",
+                "job_date": "2026-07-17",
+                "project_name": "Site A",
+                "customer_name": "Acme",
+                "processing_status": "Completed",
+                "assigned_staff_id": "STAFF-DEMO001",
+            },
+            "recordings": [],
+        },
+    }
+    process_payload = {
+        "status": "Error",
+        "action": "process_voice_dictation",
+        "message": "Error: something failed",
+        "record_id": "JS-REAL001",
+    }
+    with _patch_async_client([_mock_response(detail_payload), _mock_response(process_payload)]):
+        resp = apps_script_env.post(
+            "/api/v1/jobs/JS-REAL001/process",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"force_reprocess": False},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "Error"
+
+
+def test_apps_script_recording_requires_drive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATA_MODE", "apps_script")
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("AUTH_USERS_FILE", str(tmp_path / "auth_users.json"))
+    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path / "mock"))
+    monkeypatch.setenv("LOCAL_RECORDINGS_DIR", str(tmp_path / "recordings"))
+    monkeypatch.setenv("DEMO_STAFF_EMAIL", "alex@nativegrace.com")
+    monkeypatch.setenv("DEMO_STAFF_PASSWORD", "FieldOS-Demo-2026!")
+    monkeypatch.setenv("DEMO_STAFF_ID", "STAFF-DEMO001")
+    monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", "https://script.example/macros/s/fake/exec")
+    monkeypatch.setenv("APPS_SCRIPT_WEBHOOK_SECRET", "test-webhook-secret")
+    monkeypatch.setenv("RECORDINGS_FOLDER_ID", "")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    _clear_settings()
+
+    detail_payload = {
+        "status": "Success",
+        "action": "get_job_detail",
+        "message": "OK",
+        "data": {
+            "job": {
+                "job_sheet_id": "JS-REAL001",
+                "job_date": "2026-07-17",
+                "project_name": "Site A",
+                "customer_name": "Acme",
+                "processing_status": "",
+                "assigned_staff_id": "STAFF-DEMO001",
+            },
+            "recordings": [],
+        },
+    }
+
+    from app.main import app
+
+    with TestClient(app) as c:
+        token = _login(c)
+        with _patch_async_client([_mock_response(detail_payload)]):
+            resp = c.post(
+                "/api/v1/jobs/JS-REAL001/recordings",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"file": ("note.webm", io.BytesIO(b"abc123"), "audio/webm")},
+                data={"duration_seconds": "1", "trigger_processing": "false"},
+            )
+        assert resp.status_code == 503
+    _clear_settings()

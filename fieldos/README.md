@@ -12,11 +12,14 @@ Mobile-friendly field app for **My Jobs** and **voice recording**, talking to a 
 - Optional Apps Script `process_voice_dictation` proxy
 - Docker Compose local stack
 
-## Assumptions (documented)
+## Modes
 
-Job assignment uses `assigned_staff_id`, date uses `job_date`, display uses `project_name` / `customer_name`. These are **not confirmed** in the Apps Script export — see `docs/PHASE1_IMPLEMENTATION.md`.
+| `DATA_MODE` | Behaviour |
+|---|---|
+| `mock` (default) | Local demo jobs/recordings — no live Sheets |
+| `apps_script` | FastAPI → Apps Script (proposed gateway + confirmed `process_voice_dictation`); Drive upload for audio |
 
-Default `DATA_MODE=mock` seeds demo jobs so you can run without Google credentials. No production Sheets data is touched.
+See `docs/PHASE2_SETUP.md` before enabling `apps_script`.
 
 ## Quick start (Docker)
 

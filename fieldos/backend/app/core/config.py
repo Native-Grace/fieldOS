@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     fieldos_base_url: str = Field(default="http://localhost:8080", alias="FIELDOS_BASE_URL")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
-    # mock | sheets
+    # mock | apps_script
     data_mode: str = Field(default="mock", alias="DATA_MODE")
 
     jwt_secret: str = Field(default="dev-only-change-me", alias="JWT_SECRET")
