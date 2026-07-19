@@ -48,11 +48,16 @@ def _login(client: TestClient) -> str:
     return resp.json()["access_token"]
 
 
+EXEC_URL = "https://script.google.com/macros/s/fake/exec"
+USERCONTENT_URL = "https://script.googleusercontent.com/macros/echo?user_content_key=abc"
+_RealAsyncClient = httpx.AsyncClient
+
+
 def _mock_response(payload: dict, status_code: int = 200) -> httpx.Response:
     return httpx.Response(
         status_code,
         json=payload,
-        request=httpx.Request("POST", "https://script.example/exec"),
+        request=httpx.Request("POST", EXEC_URL),
     )
 
 
@@ -70,7 +75,48 @@ def _patch_async_client(return_values):
         return item
 
     mock_instance.post = AsyncMock(side_effect=_post)
-    return patch("app.services.apps_script.httpx.AsyncClient", return_value=mock_instance)
+
+    def _factory(*_args, **kwargs):
+        assert kwargs.get("follow_redirects") is True
+        return mock_instance
+
+    return patch("app.services.apps_script.httpx.AsyncClient", side_effect=_factory)
+
+
+def _patch_async_client_transport(handler):
+    """Use real httpx.AsyncClient + MockTransport so redirects are followed."""
+
+    def _factory(*args, **kwargs):
+        assert kwargs.get("follow_redirects") is True
+        kwargs = {**kwargs, "transport": httpx.MockTransport(handler)}
+        return _RealAsyncClient(*args, **kwargs)
+
+    return patch("app.services.apps_script.httpx.AsyncClient", side_effect=_factory)
+
+
+def _list_jobs_success_payload(job_sheet_id: str = "JS-REAL001") -> dict:
+    return {
+        "status": "Success",
+        "action": "list_jobs_for_staff",
+        "message": "OK",
+        "record_id": None,
+        "timestamp": "2026-07-18T00:00:00Z",
+        "data": {
+            "jobs": [
+                {
+                    "job_sheet_id": job_sheet_id,
+                    "job_date": "2026-07-17",
+                    "project_name": "Site A",
+                    "customer_name": "Acme",
+                    "processing_status": "Queued",
+                    "approval_status": "",
+                    "processing_error": "",
+                    "assigned_staff_id": "STAFF-DEMO001",
+                }
+            ],
+            "days": 7,
+        },
+    }
 
 
 def test_health(client: TestClient) -> None:
@@ -196,7 +242,7 @@ def apps_script_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DEMO_STAFF_EMAIL", "alex@nativegrace.com")
     monkeypatch.setenv("DEMO_STAFF_PASSWORD", "FieldOS-Demo-2026!")
     monkeypatch.setenv("DEMO_STAFF_ID", "STAFF-DEMO001")
-    monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", "https://script.example/macros/s/fake/exec")
+    monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", EXEC_URL)
     monkeypatch.setenv("APPS_SCRIPT_WEBHOOK_SECRET", "test-webhook-secret")
     monkeypatch.setenv("APPS_SCRIPT_TIMEOUT_SECONDS", "5")
     monkeypatch.setenv("RECORDINGS_FOLDER_ID", "folder123")
@@ -214,28 +260,7 @@ def apps_script_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_apps_script_list_jobs_success(apps_script_env: TestClient) -> None:
     token = _login(apps_script_env)
-    payload = {
-        "status": "Success",
-        "action": "list_jobs_for_staff",
-        "message": "OK",
-        "record_id": None,
-        "timestamp": "2026-07-18T00:00:00Z",
-        "data": {
-            "jobs": [
-                {
-                    "job_sheet_id": "JS-REAL001",
-                    "job_date": "2026-07-17",
-                    "project_name": "Site A",
-                    "customer_name": "Acme",
-                    "processing_status": "Queued",
-                    "approval_status": "",
-                    "processing_error": "",
-                    "assigned_staff_id": "STAFF-DEMO001",
-                }
-            ],
-            "days": 7,
-        },
-    }
+    payload = _list_jobs_success_payload()
     with _patch_async_client([_mock_response(payload)]):
         resp = apps_script_env.get(
             "/api/v1/jobs/mine",
@@ -249,15 +274,106 @@ def test_apps_script_list_jobs_success(apps_script_env: TestClient) -> None:
     assert "test-webhook-secret" not in resp.text
 
 
+def test_apps_script_follows_usercontent_redirect(apps_script_env: TestClient) -> None:
+    """Google ContentService: script.google.com 302 → googleusercontent JSON 200."""
+    token = _login(apps_script_env)
+    payload = _list_jobs_success_payload("JS-REDIR001")
+    seen_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_hosts.append(request.url.host)
+        if request.url.host == "script.google.com":
+            body = request.content.decode("utf-8", errors="replace")
+            assert "test-webhook-secret" in body  # secret sent on initial POST only
+            assert request.method == "POST"
+            return httpx.Response(
+                302,
+                headers={"Location": USERCONTENT_URL},
+                request=request,
+            )
+        if request.url.host == "script.googleusercontent.com":
+            return httpx.Response(200, json=payload, request=request)
+        return httpx.Response(404, text="unexpected host", request=request)
+
+    with _patch_async_client_transport(handler):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["items"][0]["job_sheet_id"] == "JS-REDIR001"
+    assert seen_hosts == ["script.google.com", "script.googleusercontent.com"]
+    assert "test-webhook-secret" not in resp.text
+
+
+def test_apps_script_final_200_json(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    payload = _list_jobs_success_payload("JS-DIRECT200")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload, request=request)
+
+    with _patch_async_client_transport(handler):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["items"][0]["job_sheet_id"] == "JS-DIRECT200"
+
+
+def test_apps_script_redirect_loop(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={"Location": str(request.url)},
+            request=request,
+        )
+
+    with _patch_async_client_transport(handler):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 502
+    assert "redirect" in resp.json()["detail"].lower()
+    assert "test-webhook-secret" not in resp.text
+
+
+def test_apps_script_redirect_to_non_json(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "script.google.com":
+            return httpx.Response(
+                302,
+                headers={"Location": USERCONTENT_URL},
+                request=request,
+            )
+        return httpx.Response(200, text="<html>oops</html>", request=request)
+
+    with _patch_async_client_transport(handler):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 502
+    assert "Invalid Apps Script response" in resp.json()["detail"]
+    assert "test-webhook-secret" not in resp.text
+
+
 def test_apps_script_invalid_response(apps_script_env: TestClient) -> None:
     token = _login(apps_script_env)
-    bad = httpx.Response(200, text="not-json", request=httpx.Request("POST", "https://script.example"))
+    bad = httpx.Response(200, text="not-json", request=httpx.Request("POST", EXEC_URL))
     with _patch_async_client([bad]):
         resp = apps_script_env.get(
             "/api/v1/jobs/mine",
             headers={"Authorization": f"Bearer {token}"},
         )
     assert resp.status_code == 502
+    assert "test-webhook-secret" not in resp.text
 
 
 def test_apps_script_timeout(apps_script_env: TestClient) -> None:
@@ -268,6 +384,7 @@ def test_apps_script_timeout(apps_script_env: TestClient) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
     assert resp.status_code == 504
+    assert "test-webhook-secret" not in resp.text
 
 
 def test_apps_script_auth_failure(apps_script_env: TestClient) -> None:
@@ -286,6 +403,7 @@ def test_apps_script_auth_failure(apps_script_env: TestClient) -> None:
         )
     assert resp.status_code == 502
     assert "test-webhook-secret" not in resp.text
+    assert "webhook_secret" in resp.json()["detail"].lower()  # Apps Script error text only
 
 
 def test_apps_script_unauthorised_job(apps_script_env: TestClient) -> None:
@@ -386,7 +504,7 @@ def test_apps_script_recording_requires_drive(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setenv("DEMO_STAFF_EMAIL", "alex@nativegrace.com")
     monkeypatch.setenv("DEMO_STAFF_PASSWORD", "FieldOS-Demo-2026!")
     monkeypatch.setenv("DEMO_STAFF_ID", "STAFF-DEMO001")
-    monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", "https://script.example/macros/s/fake/exec")
+    monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", EXEC_URL)
     monkeypatch.setenv("APPS_SCRIPT_WEBHOOK_SECRET", "test-webhook-secret")
     monkeypatch.setenv("RECORDINGS_FOLDER_ID", "")
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "")

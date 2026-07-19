@@ -53,7 +53,12 @@ class AppsScriptClient:
             "webhook_secret": self.settings.apps_script_webhook_secret,
         }
         try:
-            async with httpx.AsyncClient(timeout=self.settings.apps_script_timeout_seconds) as client:
+            # ContentService JSON responses redirect (302) to script.googleusercontent.com;
+            # httpx must follow redirects — do not re-POST the Location manually.
+            async with httpx.AsyncClient(
+                timeout=self.settings.apps_script_timeout_seconds,
+                follow_redirects=True,
+            ) as client:
                 response = await client.post(
                     self.settings.apps_script_webapp_url,
                     json=payload,
@@ -62,6 +67,9 @@ class AppsScriptClient:
         except httpx.TimeoutException as exc:
             log_extra(logger, 40, "Apps Script timeout", action=action)
             raise AppsScriptError("Apps Script request timed out.", http_status=504) from exc
+        except httpx.TooManyRedirects as exc:
+            log_extra(logger, 40, "Apps Script redirect limit exceeded", action=action)
+            raise AppsScriptError("Apps Script redirect limit exceeded.", http_status=502) from exc
         except httpx.HTTPError as exc:
             log_extra(logger, 40, "Apps Script transport error", action=action, error=type(exc).__name__)
             raise AppsScriptError("Apps Script unreachable.", http_status=502) from exc

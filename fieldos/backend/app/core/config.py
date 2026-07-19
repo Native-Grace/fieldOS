@@ -8,7 +8,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Prefer process env (Docker Compose). Also load fieldos/.env when uvicorn
+    # is started from fieldos/backend (cwd .env is missing; ../.env is the real file).
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     fieldos_env: str = Field(default="development", alias="FIELDOS_ENV")
     fieldos_base_url: str = Field(default="http://localhost:8080", alias="FIELDOS_BASE_URL")

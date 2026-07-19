@@ -31,7 +31,21 @@ class AuthUserStore:
     def _ensure_demo_user(self) -> None:
         users = self._load()
         email = self.settings.demo_staff_email.lower()
-        if any(u.get("email", "").lower() == email for u in users):
+        for user in users:
+            if user.get("email", "").lower() != email:
+                continue
+            # Resync demo identity from env so DEMO_STAFF_ID changes take effect
+            # without deleting the Docker volume auth file.
+            changed = False
+            if str(user.get("staff_id")) != str(self.settings.demo_staff_id):
+                user["staff_id"] = self.settings.demo_staff_id
+                changed = True
+            if str(user.get("staff_name") or "") != str(self.settings.demo_staff_name):
+                user["staff_name"] = self.settings.demo_staff_name
+                changed = True
+            if changed:
+                self._save(users)
+                log_extra(logger, 20, "Updated demo auth user identity", email=email)
             return
         users.append(
             {
