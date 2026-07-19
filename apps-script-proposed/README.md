@@ -1,47 +1,35 @@
 # Apps Script proposed changes (Phase 2)
 
-**Do not overwrite production `apps-script/` until reviewed and approved.**
+## Status (repo merge)
 
-## Files
+Reviewed gateway changes are now applied **locally in this repository**:
+
+| Repo file | Status |
+|---|---|
+| `apps-script/FieldOSGateway.js` | Added (copy of this folder’s gateway) |
+| `apps-script/Router.js` | Wired: secret verify, FieldOS actions, data-aware success response |
+
+**Not done:** Google Apps Script editor upload, Web App redeploy, `.env` changes, or live Sheets access.
+
+## Files in this folder
 
 | File | Purpose |
 |---|---|
-| `FieldOSGateway.js` | New `doPost` actions: `list_jobs_for_staff`, `get_job_detail`, `register_recording` |
-| `README.md` | This merge guide |
+| `FieldOSGateway.js` | Canonical proposed source (kept for review history) |
+| `README.md` | Merge / deploy guide |
 
-## Merge steps (manual — do not auto-deploy)
+## Remaining manual steps in Google Apps Script (after approval)
 
-1. In the Apps Script editor, add a new script file and paste `FieldOSGateway.js`.
-2. In `Router.js` `doPost`, replace the `!==` secret check with `fieldosVerifyWebhookSecret_(providedSecret)`.
-3. In `routeRequest`, before the `default` case, add:
-
-```javascript
-    case "list_jobs_for_staff":
-    case "get_job_detail":
-    case "register_recording": {
-      const fieldosResult = fieldosRouteRequest(payload);
-      if (!fieldosResult) throw new Error(`Routing Failure: Action '${action}' is unsupported.`);
-      // Prefer returning data-aware JSON from doPost — see note below
-      return fieldosResult;
-    }
-```
-
-4. Update `doPost` success path to include `data` when present:
-
-```javascript
-    const result = routeRequest(payload);
-    if (result.data !== undefined) {
-      return fieldosJsonResponse("Success", result.action, result.message, result.job_sheet_id, result.data);
-    }
-    return Utils.createJsonResponse("Success", result.action, result.message, result.job_sheet_id);
-```
-
-5. Deploy a **new** Web App version (Execute as: Me; Who has access: Anyone — matching current `appsscript.json`). Copy the Web App URL into FieldOS `.env` as `APPS_SCRIPT_WEBAPP_URL`.
-6. Ensure Script Property `WEBHOOK_SECRET` matches FieldOS `APPS_SCRIPT_WEBHOOK_SECRET`.
-7. Confirm live sheet headers for assignment/date/project/customer; set FieldOS env column mappings accordingly. **Do not rename sheet columns.**
+1. In the live Apps Script project, add/update script file `FieldOSGateway` with contents of `apps-script/FieldOSGateway.js`.
+2. Replace live `Router` with contents of `apps-script/Router.js` (or apply the same three edits).
+3. Deploy a **new** Web App version (Execute as: Me; Who has access: Anyone — matching `appsscript.json`).
+4. Copy the Web App URL into FieldOS `.env` as `APPS_SCRIPT_WEBAPP_URL` (only when ready).
+5. Ensure Script Property `WEBHOOK_SECRET` matches FieldOS `APPS_SCRIPT_WEBHOOK_SECRET`.
+6. Confirm live sheet headers for assignment/date/project/customer; set FieldOS env column mappings. **Do not rename sheet columns.**
+7. Keep FieldOS `DATA_MODE=mock` until you explicitly switch to `apps_script`.
 
 ## Notes
 
-- `RecordingRepository` in production export uses an invalid constructor; `register_recording` writes via `DB.insertRecord('tbl_recordings', ...)`.
+- `register_recording` writes via `DB.insertRecord('tbl_recordings', ...)`.
 - Large audio must **not** be posted to Apps Script; FieldOS uploads to Drive then calls `register_recording`.
-- Existing `process_voice_dictation` is reused unchanged.
+- Existing `process_voice_dictation` is unchanged.

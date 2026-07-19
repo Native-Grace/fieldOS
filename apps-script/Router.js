@@ -16,17 +16,23 @@ function doPost(e) {
     actionContext = payload.action || "unknown";
     jobIdContext = payload.job_sheet_id || null;
 
-    // Strict Security Verification
+    // Strict Security Verification (constant-time compare via FieldOSGateway.js)
     const providedSecret = payload.webhook_secret;
-    const expectedSecret = Config.getWebhookSecret();
-    
-    if (!providedSecret || providedSecret !== expectedSecret) {
-      throw new Error("Unauthorized: Invalid or missing webhook_secret.");
-    }
+    fieldosVerifyWebhookSecret_(providedSecret);
 
     // Process Routing
     const result = routeRequest(payload);
-    
+
+    if (result.data !== undefined) {
+      return fieldosJsonResponse(
+        "Success",
+        result.action,
+        result.message,
+        result.job_sheet_id,
+        result.data
+      );
+    }
+
     return Utils.createJsonResponse("Success", result.action, result.message, result.job_sheet_id);
 
   } catch (err) {
@@ -90,6 +96,16 @@ function routeRequest(payload) {
     case "execute_worker":
       Queue.triggerWorker();
       return { action: action, message: "Background queue worker triggered manually.", job_sheet_id: null };
+
+    case "list_jobs_for_staff":
+    case "get_job_detail":
+    case "register_recording": {
+      const fieldosResult = fieldosRouteRequest(payload);
+      if (!fieldosResult) {
+        throw new Error(`Routing Failure: Action '${action}' is unsupported.`);
+      }
+      return fieldosResult;
+    }
 
     default:
       throw new Error(`Routing Failure: Action '${action}' is unsupported.`);
