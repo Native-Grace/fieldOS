@@ -40,7 +40,7 @@ Missing/invalid → Error `"Unauthorized: Invalid or missing webhook_secret."`
 | `doGet` recorder | Conflicting definitions; FieldOS does not use |
 | `appsheetTriggerRoute` | AppSheet task; no webhook secret |
 
-### Confirmed job columns (touched in code)
+### Confirmed job columns (touched in Apps Script code)
 
 `job_sheet_id`, `processing_status`, `processing_error`, `processing_started_at`, `processing_completed_at`, `approval_status`
 
@@ -48,9 +48,13 @@ Missing/invalid → Error `"Unauthorized: Invalid or missing webhook_secret."`
 
 `recording_id`, `job_sheet_id`, `recording_file_url`, `recording_drive_file_id`, `recording_name`, `recording_order`, `duration_seconds`, `transcript`, `status`, `created_by`, `created_at`
 
-### Not confirmed in Apps Script export
+### Confirmed live `tbl_job_sheets` headers (Phase 2 env defaults)
 
-`assigned_staff_id`, `job_date`, `project_name`, `customer_name` — FieldOS keeps these as **configurable env mappings**. Proposed Apps Script actions accept column names as parameters so live sheet headers can be wired without renaming tabs/columns.
+`staff_id` (assignment), `date`, `project_id` — plus many AI/approval columns not used by My Jobs yet.
+
+### Not on live job sheet (API display only)
+
+`customer_name` / human `project_name` — resolve later via `tbl_projects` / `tbl_customers` (relationship not fully defined in Apps Script export). Gateway still accepts `customer_column` for forward compatibility.
 
 ---
 
@@ -80,9 +84,9 @@ Secrets must never appear in responses or sync-log payloads (redact like product
   "webhook_secret": "<secret>",
   "staff_id": "STAFF-...",
   "days": 7,
-  "assignment_column": "assigned_staff_id",
-  "date_column": "job_date",
-  "project_column": "project_name",
+  "assignment_column": "staff_id",
+  "date_column": "date",
+  "project_column": "project_id",
   "customer_column": "customer_name"
 }
 ```
@@ -101,8 +105,8 @@ Secrets must never appear in responses or sync-log payloads (redact like product
       {
         "job_sheet_id": "JS-...",
         "job_date": "2026-07-18",
-        "project_name": "...",
-        "customer_name": "...",
+        "project_name": "PROJ-...",
+        "customer_name": "",
         "processing_status": "Queued",
         "approval_status": "",
         "processing_error": "",
@@ -125,9 +129,9 @@ Secrets must never appear in responses or sync-log payloads (redact like product
   "webhook_secret": "<secret>",
   "job_sheet_id": "JS-...",
   "staff_id": "STAFF-...",
-  "assignment_column": "assigned_staff_id",
-  "date_column": "job_date",
-  "project_column": "project_name",
+  "assignment_column": "staff_id",
+  "date_column": "date",
+  "project_column": "project_id",
   "customer_column": "customer_name"
 }
 ```
@@ -146,7 +150,7 @@ Registers a Drive file already uploaded by FieldOS (avoids large base64 through 
   "webhook_secret": "<secret>",
   "job_sheet_id": "JS-...",
   "staff_id": "STAFF-...",
-  "assignment_column": "assigned_staff_id",
+  "assignment_column": "staff_id",
   "recording_drive_file_id": "...",
   "recording_file_url": "https://drive.google.com/...",
   "recording_name": "JS-...-REC-1-....webm",

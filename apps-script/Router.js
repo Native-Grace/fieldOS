@@ -1,5 +1,5 @@
 /**
- * Router.gs
+ * Router.js
  * Master HTTP Gateway and Request Router
  */
 
@@ -42,7 +42,7 @@ function doPost(e) {
         record_id: jobIdContext || "GATEWAY",
         target_system: "HTTP_ROUTER",
         status: "Failed",
-        request_payload: rawPayload || "EMPTY",
+        request_payload: redactWebhookSecretFromPayload_(rawPayload),
         response_payload: Utils.getStackTrace(err),
         timestamp: new Date()
       });
@@ -54,6 +54,27 @@ function doPost(e) {
   }
 }
 
+/**
+ * Redact webhook_secret from raw JSON before writing to SyncRepository / logs.
+ * Never logs or returns the secret value.
+ */
+function redactWebhookSecretFromPayload_(rawPayload) {
+  if (!rawPayload) return "EMPTY";
+  try {
+    const parsed = JSON.parse(rawPayload);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (Object.prototype.hasOwnProperty.call(parsed, "webhook_secret")) {
+        parsed.webhook_secret = "REDACTED";
+      }
+      return JSON.stringify(parsed);
+    }
+  } catch (parseErr) {
+    // Non-JSON body: avoid storing opaque blobs that may contain secrets
+    return "[UNPARSEABLE_PAYLOAD_REDACTED]";
+  }
+  return "[PAYLOAD_REDACTED]";
+}
+
 function routeRequest(payload) {
   const { action, job_sheet_id, force_reprocess } = payload;
 
@@ -62,25 +83,25 @@ function routeRequest(payload) {
   switch (action) {
     case "process_voice_dictation":
       if (!job_sheet_id) throw new Error("Action requires 'job_sheet_id'.");
-      
+
       const job = JobSheetRepository.findById(job_sheet_id);
       if (!job) throw new Error("Job sheet not found: " + job_sheet_id);
 
       if (job.processing_status === Config.QUEUE_STATUS.COMPLETED && force_reprocess !== true) {
-        return { 
-          action: action, 
-          message: "Job already completed. Skipping.", 
-          job_sheet_id: job_sheet_id 
+        return {
+          action: action,
+          message: "Job already completed. Skipping.",
+          job_sheet_id: job_sheet_id
         };
       }
-      
+
       JobSheetRepository.update(job_sheet_id, {
         processing_status: Config.QUEUE_STATUS.QUEUED,
-        processing_error: "" 
+        processing_error: ""
       });
-      
+
       const safePayload = { ...payload, webhook_secret: "REDACTED" };
-      
+
       SyncRepository.create({
         record_id: job_sheet_id,
         target_system: "AppSheet_Webhook",
@@ -89,7 +110,7 @@ function routeRequest(payload) {
         response_payload: "Queued for background worker.",
         timestamp: new Date()
       });
-      
+
       Queue.triggerWorker();
       return { action: action, message: "Job successfully queued.", job_sheet_id: job_sheet_id };
 
@@ -121,17 +142,18 @@ function testDoPost() {
     postData: {
       contents: JSON.stringify({
         action: "process_voice_dictation",
-        job_sheet_id: "TEST-JOB-ID-123", 
+        job_sheet_id: "TEST-JOB-ID-123",
         user_identity: "test@nativegrace.com",
         force_reprocess: false,
-        webhook_secret: Config.getWebhookSecret() 
+        webhook_secret: Config.getWebhookSecret()
       })
     }
   };
-  
+
   const response = doPost(mockEvent);
   Logger.log("doPost Response: " + response.getContent());
 }
+
 /**
  * Native AppSheet Automation Entry Point
  * Bypasses Workspace HTTP Webhook restrictions by running natively within the domain boundary.
@@ -139,7 +161,7 @@ function testDoPost() {
 function appsheetTriggerRoute(job_sheet_id, user_identity, force_reprocess) {
   try {
     if (!job_sheet_id) throw new Error("Missing required argument: job_sheet_id");
-    
+
     // Construct a mock payload identical to what routeRequest expects
     const payload = {
       action: "process_voice_dictation",
@@ -150,13 +172,13 @@ function appsheetTriggerRoute(job_sheet_id, user_identity, force_reprocess) {
 
     // Route directly into our existing queue logic
     const result = routeRequest(payload);
-    
+
     console.log(`Internal Routing Success: ${result.message} for Job ${job_sheet_id}`);
     return `Success: ${result.message}`;
 
   } catch (err) {
     console.error(`Internal Routing Failure for Job ${job_sheet_id}: ${err.toString()}`);
-    
+
     // Log the error natively to sync logs
     try {
       SyncRepository.create({
@@ -170,7 +192,7 @@ function appsheetTriggerRoute(job_sheet_id, user_identity, force_reprocess) {
     } catch (loggingErr) {
       console.error("Failed to write internal error to Sync log.", loggingErr);
     }
-    
+
     throw new Error(err.toString()); // Propagate error back to AppSheet sync logs
   }
 }

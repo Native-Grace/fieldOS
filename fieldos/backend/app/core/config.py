@@ -31,10 +31,10 @@ class Settings(BaseSettings):
     demo_staff_id: str = Field(default="STAFF-DEMO001", alias="DEMO_STAFF_ID")
     demo_staff_name: str = Field(default="Alex Technician", alias="DEMO_STAFF_NAME")
 
-    # Sheet column assumptions (not confirmed in Apps Script export — configurable)
-    job_assignment_column: str = Field(default="assigned_staff_id", alias="JOB_ASSIGNMENT_COLUMN")
-    job_date_column: str = Field(default="job_date", alias="JOB_DATE_COLUMN")
-    job_project_column: str = Field(default="project_name", alias="JOB_PROJECT_COLUMN")
+    # Live tbl_job_sheets column mappings (customer_name not on job sheet — display via lookup TBD)
+    job_assignment_column: str = Field(default="staff_id", alias="JOB_ASSIGNMENT_COLUMN")
+    job_date_column: str = Field(default="date", alias="JOB_DATE_COLUMN")
+    job_project_column: str = Field(default="project_id", alias="JOB_PROJECT_COLUMN")
     job_customer_column: str = Field(default="customer_name", alias="JOB_CUSTOMER_COLUMN")
     jobs_default_days: int = Field(default=7, alias="JOBS_DEFAULT_DAYS")
 

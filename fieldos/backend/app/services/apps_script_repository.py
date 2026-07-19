@@ -14,7 +14,7 @@ from app.services.drive_upload import upload_recording_to_drive
 
 APPS_SCRIPT_ASSUMPTIONS = [
     "DATA_MODE=apps_script reads/writes via proposed Apps Script actions (see apps-script-proposed/).",
-    "Assignment/date/project/customer columns are configurable env mappings — not confirmed in production Apps Script export.",
+    "Assignment/date/project columns map to live tbl_job_sheets: staff_id, date, project_id. customer_name is not on the job sheet (lookup TBD).",
     "Audio uploads go to Drive from FastAPI, then register_recording; large base64 is never posted to Apps Script.",
     "process_voice_dictation is the confirmed production enqueue action.",
 ]

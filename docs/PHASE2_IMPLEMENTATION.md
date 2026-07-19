@@ -31,8 +31,9 @@ Missing HTTP for list jobs, job detail, register recording. Full contract: `docs
 
 | Field | Status |
 |---|---|
-| `job_sheet_id`, `processing_*`, `approval_status` | **Confirmed** in Apps Script |
-| `assigned_staff_id`, `job_date`, `project_name`, `customer_name` | **Not confirmed** — configurable via env; proposed gateway accepts column names as parameters |
+| `job_sheet_id`, `processing_*`, `approval_status` | **Confirmed** in Apps Script + live headers |
+| `staff_id`, `date`, `project_id` | **Confirmed** live `tbl_job_sheets` headers (FieldOS env defaults) |
+| `customer_name` | **Not on job sheet** — API display field; resolve via `project_id` → `tbl_projects` → customer (lookup TBD) |
 
 ## 4. Safety
 

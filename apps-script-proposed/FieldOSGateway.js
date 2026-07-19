@@ -141,9 +141,9 @@ const FieldOSGateway = {
 
     const days = Math.min(Math.max(Number(payload.days || 7), 1), 90);
     const cols = {
-      assignment: this._col(payload, "assignment_column", "assigned_staff_id"),
-      date: this._col(payload, "date_column", "job_date"),
-      project: this._col(payload, "project_column", "project_name"),
+      assignment: this._col(payload, "assignment_column", "staff_id"),
+      date: this._col(payload, "date_column", "date"),
+      project: this._col(payload, "project_column", "project_id"),
       customer: this._col(payload, "customer_column", "customer_name")
     };
 
@@ -187,9 +187,9 @@ const FieldOSGateway = {
     if (!staffId) throw new Error("Missing required attribute: staff_id.");
 
     const cols = {
-      assignment: this._col(payload, "assignment_column", "assigned_staff_id"),
-      date: this._col(payload, "date_column", "job_date"),
-      project: this._col(payload, "project_column", "project_name"),
+      assignment: this._col(payload, "assignment_column", "staff_id"),
+      date: this._col(payload, "date_column", "date"),
+      project: this._col(payload, "project_column", "project_id"),
       customer: this._col(payload, "customer_column", "customer_name")
     };
 
@@ -223,7 +223,7 @@ const FieldOSGateway = {
     if (!payload.recording_drive_file_id) throw new Error("Missing recording_drive_file_id.");
     if (!payload.recording_file_url) throw new Error("Missing recording_file_url.");
 
-    const assignmentColumn = this._col(payload, "assignment_column", "assigned_staff_id");
+    const assignmentColumn = this._col(payload, "assignment_column", "staff_id");
     const job = JobSheetRepository.findById(jobSheetId);
     this._assertAssigned(job, staffId, assignmentColumn);
 

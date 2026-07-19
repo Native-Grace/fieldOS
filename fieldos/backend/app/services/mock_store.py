@@ -27,16 +27,20 @@ class MockStore:
         if not self.jobs_path.exists():
             today = date.today()
             staff_id = self.settings.demo_staff_id
+            assign_col = self.settings.job_assignment_column
+            date_col = self.settings.job_date_column
+            project_col = self.settings.job_project_column
+            customer_col = self.settings.job_customer_column
             jobs = []
             for i, offset in enumerate([0, 1, 3, 6, 10]):
                 d = today - timedelta(days=offset)
                 jobs.append(
                     {
                         "job_sheet_id": f"JS-DEMO{i+1:03d}",
-                        "assigned_staff_id": staff_id if offset <= 6 else "STAFF-OTHER",
-                        "job_date": d.isoformat(),
-                        "project_name": f"Demo Project {i+1}",
-                        "customer_name": f"Customer {chr(65+i)}",
+                        assign_col: staff_id if offset <= 6 else "STAFF-OTHER",
+                        date_col: d.isoformat(),
+                        project_col: f"PROJ-DEMO{i+1:03d}",
+                        customer_col: f"Customer {chr(65+i)}",
                         "processing_status": ["", "Queued", "Processing", "Failed", "Completed"][i % 5],
                         "approval_status": "Pending Review" if i == 3 else "",
                         "processing_error": "Simulated pipeline error for demo." if i == 3 else "",

@@ -15,9 +15,9 @@ from app.services.mock_store import MockStore
 
 MOCK_ASSUMPTIONS = [
     "DATA_MODE=mock uses local JSON demo jobs — not live Sheets.",
-    "Assignment filter uses JOB_ASSIGNMENT_COLUMN (default assigned_staff_id) — not confirmed in Apps Script export.",
-    "Date filter uses JOB_DATE_COLUMN (default job_date).",
-    "Display fields project_name / customer_name are Phase 1/2 configurable assumptions.",
+    "Assignment filter uses JOB_ASSIGNMENT_COLUMN (default staff_id — live tbl_job_sheets).",
+    "Date filter uses JOB_DATE_COLUMN (default date).",
+    "Display: JOB_PROJECT_COLUMN defaults to project_id (ID until project lookup); JOB_CUSTOMER_COLUMN defaults to customer_name (not on job sheet).",
 ]
 
 

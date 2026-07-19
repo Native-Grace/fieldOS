@@ -64,16 +64,17 @@ In the Apps Script project (Project Settings → Script properties):
 
 ## 5. Confirm live sheet column headers
 
-Before switching FieldOS modes, export header row of `tbl_job_sheets` and set:
+Before switching FieldOS modes, confirm `.env` matches live `tbl_job_sheets` headers:
 
 ```bash
-JOB_ASSIGNMENT_COLUMN=...   # staff assignment column as it actually appears
-JOB_DATE_COLUMN=...
-JOB_PROJECT_COLUMN=...
-JOB_CUSTOMER_COLUMN=...
+JOB_ASSIGNMENT_COLUMN=staff_id
+JOB_DATE_COLUMN=date
+JOB_PROJECT_COLUMN=project_id
+JOB_CUSTOMER_COLUMN=customer_name   # not on job sheet; display name via project→customer lookup TBD
 ```
 
-Defaults (`assigned_staff_id`, `job_date`, `project_name`, `customer_name`) are **assumptions**.
+Confirmed live assignment/date/project columns: `staff_id`, `date`, `project_id`.  
+`customer_name` is **not** a `tbl_job_sheets` header — kept as an API display mapping until lookup is implemented.
 
 ---
 
