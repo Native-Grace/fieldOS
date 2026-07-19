@@ -11,6 +11,8 @@ services:
       LOCAL_RECORDINGS_DIR: /data/recordings
     volumes:
       - fieldos_data:/data
+      # Service account JSON for Drive uploads (create file locally; never commit it)
+      - ./secrets/service-account.json:/app/secrets/service-account.json:ro
     ports:
       - "8000:8000"
     healthcheck:

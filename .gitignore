@@ -13,4 +13,5 @@ venv/
 fieldos/backend/.venv/
 fieldos/data/
 fieldos/backend/data/
+fieldos/secrets/
 *.webm

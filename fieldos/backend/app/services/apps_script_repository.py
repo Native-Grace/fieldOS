@@ -10,7 +10,7 @@ from fastapi import HTTPException
 
 from app.core.config import Settings
 from app.services.apps_script import AppsScriptClient, AppsScriptError
-from app.services.drive_upload import upload_recording_to_drive
+from app.services.drive_upload import delete_drive_file, upload_recording_to_drive
 
 APPS_SCRIPT_ASSUMPTIONS = [
     "DATA_MODE=apps_script reads/writes via proposed Apps Script actions (see apps-script-proposed/).",
@@ -142,6 +142,8 @@ class AppsScriptJobRepository:
                 }
             )
         except AppsScriptError as exc:
+            # Drive succeeded but sheet register failed — remove orphan file best-effort.
+            delete_drive_file(self.settings, drive.get("recording_drive_file_id"))
             _raise_from_apps(exc)
             raise
 

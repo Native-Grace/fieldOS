@@ -5,3 +5,8 @@ __pycache__/
 node_modules/
 dist/
 data/
+# Service account credentials — never commit
+secrets/
+*.pem
+*.p12
+
