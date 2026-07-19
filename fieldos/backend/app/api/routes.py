@@ -36,18 +36,25 @@ def auth_store(settings: Settings = Depends(get_settings)) -> AuthUserStore:
 
 
 def _job_summary(job: dict, settings: Settings) -> JobSummary:
-    raw_date = job.get(settings.job_date_column) or job.get("job_date")
+    # Prefer normalized API fields from Apps Script gateway / mock adapters.
+    raw_date = job.get("job_date") or job.get(settings.job_date_column)
     job_date = None
     if raw_date:
         try:
             job_date = date.fromisoformat(str(raw_date)[:10])
         except ValueError:
             job_date = None
+    project = job.get("project_name")
+    if project in (None, ""):
+        project = job.get(settings.job_project_column) or ""
+    customer = job.get("customer_name")
+    if customer is None:
+        customer = job.get(settings.job_customer_column) or ""
     return JobSummary(
         job_sheet_id=str(job.get("job_sheet_id", "")),
         job_date=job_date,
-        project_name=str(job.get(settings.job_project_column) or job.get("project_name") or ""),
-        customer_name=str(job.get(settings.job_customer_column) or job.get("customer_name") or ""),
+        project_name=str(project or ""),
+        customer_name=str(customer or ""),
         processing_status=str(job.get("processing_status", "") or ""),
         approval_status=str(job.get("approval_status", "") or ""),
         processing_error=str(job.get("processing_error", "") or ""),

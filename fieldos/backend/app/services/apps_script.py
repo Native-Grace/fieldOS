@@ -47,6 +47,20 @@ class AppsScriptClient:
 
     async def _post(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         self._require_configured()
+        # Safe diagnostics — never log webhook_secret or raw payloads.
+        log_extra(
+            logger,
+            20,
+            "Apps Script request",
+            action=action,
+            staff_id=body.get("staff_id"),
+            days=body.get("days"),
+            job_sheet_id=body.get("job_sheet_id"),
+            assignment_column=body.get("assignment_column"),
+            date_column=body.get("date_column"),
+            project_column=body.get("project_column"),
+            customer_column=body.get("customer_column"),
+        )
         payload = {
             **body,
             "action": action,
@@ -102,6 +116,9 @@ class AppsScriptClient:
             raise AppsScriptError("Invalid Apps Script response shape.", http_status=502)
 
         apps_status = str(data.get("status", ""))
+        data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
+        jobs = data_block.get("jobs") if isinstance(data_block, dict) else None
+        job_count = len(jobs) if isinstance(jobs, list) else None
         log_extra(
             logger,
             20 if apps_status.lower() == "success" else 40,
@@ -110,6 +127,7 @@ class AppsScriptClient:
             http_status=response.status_code,
             apps_status=apps_status,
             apps_message=str(data.get("message", ""))[:200],
+            job_count=job_count,
         )
 
         if apps_status.lower() != "success":

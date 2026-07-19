@@ -94,28 +94,31 @@ def _patch_async_client_transport(handler):
     return patch("app.services.apps_script.httpx.AsyncClient", side_effect=_factory)
 
 
-def _list_jobs_success_payload(job_sheet_id: str = "JS-REAL001") -> dict:
+def _list_jobs_success_payload(
+    job_sheet_id: str = "JS-REAL001",
+    *,
+    customer_name: str | None = "Acme",
+    include_optional: bool = True,
+) -> dict:
+    job: dict = {
+        "job_sheet_id": job_sheet_id,
+        "job_date": "2026-07-17",
+        "project_name": "PROJ-001",
+        "processing_status": "Queued",
+        "assigned_staff_id": "STAFF-9012C021",
+    }
+    if customer_name is not None:
+        job["customer_name"] = customer_name
+    if include_optional:
+        job["approval_status"] = ""
+        job["processing_error"] = ""
     return {
         "status": "Success",
         "action": "list_jobs_for_staff",
         "message": "OK",
         "record_id": None,
         "timestamp": "2026-07-18T00:00:00Z",
-        "data": {
-            "jobs": [
-                {
-                    "job_sheet_id": job_sheet_id,
-                    "job_date": "2026-07-17",
-                    "project_name": "Site A",
-                    "customer_name": "Acme",
-                    "processing_status": "Queued",
-                    "approval_status": "",
-                    "processing_error": "",
-                    "assigned_staff_id": "STAFF-DEMO001",
-                }
-            ],
-            "days": 7,
-        },
+        "data": {"jobs": [job], "days": 7},
     }
 
 
@@ -241,10 +244,15 @@ def apps_script_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("LOCAL_RECORDINGS_DIR", str(tmp_path / "recordings"))
     monkeypatch.setenv("DEMO_STAFF_EMAIL", "alex@nativegrace.com")
     monkeypatch.setenv("DEMO_STAFF_PASSWORD", "FieldOS-Demo-2026!")
-    monkeypatch.setenv("DEMO_STAFF_ID", "STAFF-DEMO001")
+    monkeypatch.setenv("DEMO_STAFF_ID", "STAFF-9012C021")
     monkeypatch.setenv("APPS_SCRIPT_WEBAPP_URL", EXEC_URL)
     monkeypatch.setenv("APPS_SCRIPT_WEBHOOK_SECRET", "test-webhook-secret")
     monkeypatch.setenv("APPS_SCRIPT_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("JOB_ASSIGNMENT_COLUMN", "staff_id")
+    monkeypatch.setenv("JOB_DATE_COLUMN", "date")
+    monkeypatch.setenv("JOB_PROJECT_COLUMN", "project_id")
+    monkeypatch.setenv("JOB_CUSTOMER_COLUMN", "customer_name")
+    monkeypatch.setenv("JOBS_DEFAULT_DAYS", "7")
     monkeypatch.setenv("RECORDINGS_FOLDER_ID", "folder123")
     sa = tmp_path / "sa.json"
     sa.write_text("{}", encoding="utf-8")
@@ -272,6 +280,65 @@ def test_apps_script_list_jobs_success(apps_script_env: TestClient) -> None:
     assert body["items"][0]["job_sheet_id"] == "JS-REAL001"
     assert body["items"][0]["customer_name"] == "Acme"
     assert "test-webhook-secret" not in resp.text
+
+
+def test_apps_script_list_jobs_mapping_payload(apps_script_env: TestClient) -> None:
+    """Backend must send live sheet column names and authenticated staff_id."""
+    token = _login(apps_script_env)
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.host == "script.google.com":
+            import json as _json
+
+            captured.update(_json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                302,
+                headers={"Location": USERCONTENT_URL},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=_list_jobs_success_payload("21759f5d", customer_name=""),
+            request=request,
+        )
+
+    with _patch_async_client_transport(handler):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert captured["action"] == "list_jobs_for_staff"
+    assert captured["staff_id"] == "STAFF-9012C021"
+    assert captured["days"] == 7
+    assert captured["assignment_column"] == "staff_id"
+    assert captured["date_column"] == "date"
+    assert captured["project_column"] == "project_id"
+    assert captured["customer_column"] == "customer_name"
+    assert captured["webhook_secret"] == "test-webhook-secret"
+    assert "test-webhook-secret" not in resp.text
+    item = resp.json()["items"][0]
+    assert item["job_sheet_id"] == "21759f5d"
+    assert item["customer_name"] == ""
+    assert item["project_name"] == "PROJ-001"
+    assert item["job_date"] == "2026-07-17"
+
+
+def test_apps_script_list_jobs_blank_customer_and_missing_optional(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+    payload = _list_jobs_success_payload("21759f5d", customer_name=None, include_optional=False)
+    with _patch_async_client([_mock_response(payload)]):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["items"][0]
+    assert item["job_sheet_id"] == "21759f5d"
+    assert item["customer_name"] == ""
+    assert item["approval_status"] == ""
+    assert item["processing_error"] == ""
 
 
 def test_apps_script_follows_usercontent_redirect(apps_script_env: TestClient) -> None:

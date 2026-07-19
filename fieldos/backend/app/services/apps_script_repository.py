@@ -42,11 +42,36 @@ class AppsScriptJobRepository:
         return list(APPS_SCRIPT_ASSUMPTIONS)
 
     def _job_row(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Normalize gateway job objects for FieldOS JobSummary.
+
+        FieldOSGateway._normalizeJob always emits API fields:
+        job_date, project_name, customer_name, assigned_staff_id
+        (values sourced from live sheet columns staff_id/date/project_id/…).
+        customer_name may be blank — that is valid.
+        """
+        date_val = job.get("job_date")
+        if date_val in (None, ""):
+            date_val = job.get(self.settings.job_date_column, "")
+        project_val = job.get("project_name")
+        if project_val in (None, ""):
+            project_val = job.get(self.settings.job_project_column, "")
+        customer_val = job.get("customer_name")
+        if customer_val is None:
+            customer_val = job.get(self.settings.job_customer_column, "")
+        staff_val = job.get("assigned_staff_id")
+        if staff_val in (None, ""):
+            staff_val = job.get(self.settings.job_assignment_column, "")
+
         row = dict(job)
-        row.setdefault(self.settings.job_assignment_column, job.get("assigned_staff_id", ""))
-        row.setdefault(self.settings.job_date_column, job.get("job_date", ""))
-        row.setdefault(self.settings.job_project_column, job.get("project_name", ""))
-        row.setdefault(self.settings.job_customer_column, job.get("customer_name", ""))
+        row["job_date"] = date_val if date_val is not None else ""
+        row["project_name"] = "" if project_val is None else str(project_val)
+        row["customer_name"] = "" if customer_val is None else str(customer_val)
+        row["assigned_staff_id"] = "" if staff_val is None else str(staff_val)
+        # Mirror onto configured sheet keys for any remaining readers.
+        row[self.settings.job_date_column] = row["job_date"]
+        row[self.settings.job_project_column] = row["project_name"]
+        row[self.settings.job_customer_column] = row["customer_name"]
+        row[self.settings.job_assignment_column] = row["assigned_staff_id"]
         return row
 
     async def alist_jobs_for_staff(self, staff_id: str, days: int) -> list[dict[str, Any]]:
