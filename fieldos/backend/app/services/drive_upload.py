@@ -17,7 +17,8 @@ from app.core.logging import get_logger, log_extra
 
 logger = get_logger(__name__)
 
-DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+# Full Drive scope required for existing Shared Drive folders (drive.file is insufficient).
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 
 
 def drive_upload_configured(settings: Settings) -> bool:
@@ -219,13 +220,35 @@ def upload_recording_to_drive(
 
 
 def delete_drive_file(settings: Settings, file_id: Optional[str]) -> None:
-    """Best-effort delete after a failed register_recording (orphan cleanup)."""
+    """Best-effort delete after a failed register_recording (orphan cleanup).
+
+    On Shared Drives, permanent delete can return notFound even when the file exists;
+    fall back to trash so the file leaves the active folder.
+    """
     if not file_id or not drive_upload_configured(settings):
         return
     try:
         service = _drive_service(settings)
-        service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
-        log_extra(logger, 20, "Deleted orphan Drive recording", drive_file_id=file_id)
+        try:
+            service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
+            log_extra(logger, 20, "Deleted orphan Drive recording", drive_file_id=file_id)
+            return
+        except Exception as delete_exc:
+            http_status, reason = _google_error_reason(delete_exc)
+            # Fall back to trash for Shared Drive permission / notFound edge cases.
+            service.files().update(
+                fileId=file_id,
+                body={"trashed": True},
+                supportsAllDrives=True,
+            ).execute()
+            log_extra(
+                logger,
+                20,
+                "Trashed orphan Drive recording after delete fallback",
+                drive_file_id=file_id,
+                delete_http_status=http_status,
+                delete_reason=reason,
+            )
     except Exception as exc:
         http_status, reason = _google_error_reason(exc)
         log_extra(

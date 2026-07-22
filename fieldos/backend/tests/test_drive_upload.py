@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.services.drive_upload import delete_drive_file, upload_recording_to_drive
+from app.services.drive_upload import DRIVE_SCOPE, delete_drive_file, upload_recording_to_drive
 
 
 def _clear_settings():
@@ -31,6 +31,27 @@ def _settings(tmp_path: Path, *, folder: str = "folder123", creds: Path | None =
         GOOGLE_APPLICATION_CREDENTIALS=str(creds),
         JWT_SECRET="test",
     )
+
+
+def test_drive_scope_is_full_drive() -> None:
+    assert DRIVE_SCOPE == "https://www.googleapis.com/auth/drive"
+    assert DRIVE_SCOPE.endswith("/drive")
+    assert "drive.file" not in DRIVE_SCOPE
+    assert "drive.readonly" not in DRIVE_SCOPE
+
+
+def test_drive_service_uses_full_drive_scope(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    with patch("google.oauth2.service_account.Credentials.from_service_account_file") as from_file:
+        with patch("googleapiclient.discovery.build") as build:
+            from_file.return_value = MagicMock()
+            build.return_value = MagicMock()
+            from app.services.drive_upload import _drive_service
+
+            _drive_service(settings)
+    assert from_file.call_args.kwargs["scopes"] == ["https://www.googleapis.com/auth/drive"]
+    assert build.call_args.args[0] == "drive"
+    assert build.call_args.args[1] == "v3"
 
 
 def test_upload_missing_folder_id(tmp_path: Path) -> None:
@@ -109,6 +130,23 @@ def test_delete_uses_supports_all_drives(tmp_path: Path) -> None:
     mock_service.files.return_value.delete.assert_called_once_with(
         fileId="drive-file-1", supportsAllDrives=True
     )
+
+
+def test_delete_falls_back_to_trash_on_not_found(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    mock_service = MagicMock()
+    mock_service.files.return_value.delete.return_value.execute.side_effect = _http_error(
+        404, "notFound"
+    )
+    with patch("app.services.drive_upload._drive_service", return_value=mock_service):
+        delete_drive_file(settings, "drive-file-1")
+    mock_service.files.return_value.delete.assert_called_once_with(
+        fileId="drive-file-1", supportsAllDrives=True
+    )
+    update_kwargs = mock_service.files.return_value.update.call_args.kwargs
+    assert update_kwargs["fileId"] == "drive-file-1"
+    assert update_kwargs["supportsAllDrives"] is True
+    assert update_kwargs["body"] == {"trashed": True}
 
 
 def test_storage_quota_exceeded_is_config_error(tmp_path: Path) -> None:
