@@ -219,11 +219,26 @@ def upload_recording_to_drive(
         raise _map_drive_exception(exc) from exc
 
 
+def _should_trash_after_delete_failure(http_status: Optional[int], reason: Optional[str]) -> bool:
+    """Trash fallback only for Shared Drive delete edge cases (notFound / permission)."""
+    reason_l = (reason or "").lower().replace("_", "")
+    if http_status == 404 or reason_l in {"notfound", "404"}:
+        return True
+    if http_status == 403 or reason_l in {
+        "insufficientfilepermissions",
+        "insufficientpermissions",
+        "filepermissions",
+        "forbidden",
+    }:
+        return True
+    return False
+
+
 def delete_drive_file(settings: Settings, file_id: Optional[str]) -> None:
     """Best-effort delete after a failed register_recording (orphan cleanup).
 
-    On Shared Drives, permanent delete can return notFound even when the file exists;
-    fall back to trash so the file leaves the active folder.
+    Attempts permanent delete first. On Shared Drives, delete can return notFound or
+    permission errors even when the file exists; only then fall back to trash.
     """
     if not file_id or not drive_upload_configured(settings):
         return
@@ -235,7 +250,17 @@ def delete_drive_file(settings: Settings, file_id: Optional[str]) -> None:
             return
         except Exception as delete_exc:
             http_status, reason = _google_error_reason(delete_exc)
-            # Fall back to trash for Shared Drive permission / notFound edge cases.
+            if not _should_trash_after_delete_failure(http_status, reason):
+                log_extra(
+                    logger,
+                    40,
+                    "Failed to delete orphan Drive recording (no trash fallback)",
+                    drive_file_id=file_id,
+                    error=type(delete_exc).__name__,
+                    http_status=http_status,
+                    reason=reason,
+                )
+                return
             service.files().update(
                 fileId=file_id,
                 body={"trashed": True},

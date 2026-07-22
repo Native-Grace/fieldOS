@@ -36,3 +36,27 @@ docker compose up --build -d
 - UI: http://localhost:8080  
 - Docs: `fieldos/README.md`, `docs/PHASE1_IMPLEMENTATION.md`, `docs/PHASE1_VALIDATION.md`  
 - Architecture: `docs/FIELDOS_ARCHITECTURE.md`
+
+## Phase 2 (Apps Script + Drive)
+
+Phase 2 connects FieldOS to live Apps Script for jobs/recordings and uploads audio to a Shared Drive folder from FastAPI.
+
+**Verified locally:** job list/detail, Drive upload, `register_recording`, frontend recording list, `process_voice_dictation` queueing.
+
+```bash
+cd fieldos
+# Configure .env for DATA_MODE=apps_script (see docs/PHASE2_SETUP.md)
+# Place service-account.json under fieldos/secrets/ (gitignored)
+docker compose up --build -d
+curl -fsS http://localhost:8000/api/v1/ready
+```
+
+| Doc | Purpose |
+|---|---|
+| `docs/PHASE2_SETUP.md` | Setup, Drive requirements, verification checklist |
+| `docs/PHASE2_IMPLEMENTATION.md` | What shipped + confirmed schema |
+| `docs/APPS_SCRIPT_API.md` | Apps Script HTTP contract |
+
+**Confirmed live job columns:** `staff_id`, `date`, `project_id` (`customer_name` not on `tbl_job_sheets`).  
+**Drive:** full Drive scope + Shared Drive + `supportsAllDrives` — see Phase 2 setup.  
+**Never commit** `.env`, webhook secrets, or `fieldos/secrets/*`.

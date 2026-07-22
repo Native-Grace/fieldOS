@@ -130,6 +130,7 @@ def test_delete_uses_supports_all_drives(tmp_path: Path) -> None:
     mock_service.files.return_value.delete.assert_called_once_with(
         fileId="drive-file-1", supportsAllDrives=True
     )
+    mock_service.files.return_value.update.assert_not_called()
 
 
 def test_delete_falls_back_to_trash_on_not_found(tmp_path: Path) -> None:
@@ -147,6 +148,47 @@ def test_delete_falls_back_to_trash_on_not_found(tmp_path: Path) -> None:
     assert update_kwargs["fileId"] == "drive-file-1"
     assert update_kwargs["supportsAllDrives"] is True
     assert update_kwargs["body"] == {"trashed": True}
+
+
+def test_delete_falls_back_to_trash_on_permission_denied(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    mock_service = MagicMock()
+    mock_service.files.return_value.delete.return_value.execute.side_effect = _http_error(
+        403, "insufficientFilePermissions"
+    )
+    with patch("app.services.drive_upload._drive_service", return_value=mock_service):
+        delete_drive_file(settings, "drive-file-1")
+    mock_service.files.return_value.delete.assert_called_once()
+    update_kwargs = mock_service.files.return_value.update.call_args.kwargs
+    assert update_kwargs["body"] == {"trashed": True}
+    assert update_kwargs["supportsAllDrives"] is True
+
+
+def test_delete_and_trash_both_fail(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    mock_service = MagicMock()
+    mock_service.files.return_value.delete.return_value.execute.side_effect = _http_error(
+        404, "notFound"
+    )
+    mock_service.files.return_value.update.return_value.execute.side_effect = _http_error(
+        403, "insufficientFilePermissions"
+    )
+    with patch("app.services.drive_upload._drive_service", return_value=mock_service):
+        delete_drive_file(settings, "drive-file-1")  # must not raise
+    mock_service.files.return_value.delete.assert_called_once()
+    mock_service.files.return_value.update.assert_called_once()
+
+
+def test_delete_does_not_trash_on_unrelated_error(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    mock_service = MagicMock()
+    mock_service.files.return_value.delete.return_value.execute.side_effect = _http_error(
+        500, "internalError"
+    )
+    with patch("app.services.drive_upload._drive_service", return_value=mock_service):
+        delete_drive_file(settings, "drive-file-1")
+    mock_service.files.return_value.delete.assert_called_once()
+    mock_service.files.return_value.update.assert_not_called()
 
 
 def test_storage_quota_exceeded_is_config_error(tmp_path: Path) -> None:

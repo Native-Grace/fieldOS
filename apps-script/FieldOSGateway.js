@@ -13,6 +13,7 @@
  *   - process_voice_dictation (existing Router.js)
  *   - JobSheetRepository / SyncRepository / DB / Config / Utils
  *   - DB.insertRecord for tbl_recordings (avoids broken RecordingRepository constructor)
+ *   - FieldOSDisplayLookup.js for project/customer display names (batch maps; safe degrade)
  */
 
 /**
@@ -88,7 +89,7 @@ const FieldOSGateway = {
     return (v && String(v).trim()) || fallback;
   },
 
-  _normalizeJob: function(job, cols) {
+  _normalizeJob: function(job, cols, displayMaps) {
     const dateRaw = job[cols.date] || "";
     let jobDate = "";
     if (dateRaw) {
@@ -98,11 +99,34 @@ const FieldOSGateway = {
         jobDate = String(dateRaw).slice(0, 10);
       }
     }
+
+    const projectKey = String(job[cols.project] || "").trim();
+    // Prefer project→customer lookup; fall back to raw sheet cells (customer usually absent on job sheet).
+    let projectName = "";
+    let customerName = "";
+    try {
+      const maps = displayMaps || { projectById: {}, customerById: {} };
+      const resolved = fieldosResolveProjectCustomer_(
+        projectKey,
+        maps.projectById,
+        maps.customerById
+      );
+      projectName = resolved.project_name || "";
+      customerName = resolved.customer_name || "";
+    } catch (err) {
+      projectName = projectKey;
+      customerName = "";
+    }
+    // If sheet still has a customer column value and lookup returned empty, keep sheet value.
+    if (!customerName && cols.customer) {
+      customerName = String(job[cols.customer] || "").trim();
+    }
+
     return {
       job_sheet_id: String(job.job_sheet_id || ""),
       job_date: jobDate,
-      project_name: String(job[cols.project] || ""),
-      customer_name: String(job[cols.customer] || ""),
+      project_name: projectName,
+      customer_name: customerName,
       processing_status: String(job.processing_status || ""),
       approval_status: String(job.approval_status || ""),
       processing_error: String(job.processing_error || ""),
@@ -153,6 +177,8 @@ const FieldOSGateway = {
 
     const all = JobSheetRepository.findAll() || [];
     const jobs = [];
+    // Load project/customer maps once (avoid N+1 findById per job).
+    const displayMaps = fieldosLoadDisplayMaps_();
 
     all.forEach(function(job) {
       if (String(job[cols.assignment] || "") !== String(staffId)) return;
@@ -165,7 +191,7 @@ const FieldOSGateway = {
         jobDate = new Date(String(raw).slice(0, 10) + "T00:00:00");
       }
       if (isNaN(jobDate.getTime()) || jobDate < since) return;
-      jobs.push(FieldOSGateway._normalizeJob(job, cols));
+      jobs.push(FieldOSGateway._normalizeJob(job, cols, displayMaps));
     });
 
     jobs.sort(function(a, b) {
@@ -204,12 +230,14 @@ const FieldOSGateway = {
       recordings = DB.findWhere("tbl_recordings", { job_sheet_id: jobSheetId }) || [];
     }
 
+    const displayMaps = fieldosLoadDisplayMaps_();
+
     return {
       action: "get_job_detail",
       message: "OK",
       job_sheet_id: jobSheetId,
       data: {
-        job: this._normalizeJob(job, cols),
+        job: this._normalizeJob(job, cols, displayMaps),
         recordings: recordings.map(this._normalizeRecording)
       }
     };

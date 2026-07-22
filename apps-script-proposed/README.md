@@ -1,22 +1,22 @@
 # Apps Script proposed changes (Phase 2)
 
-## Status (repo merge)
+## Status (repo + live)
 
-Reviewed gateway changes are now applied **locally in this repository**:
+Reviewed gateway changes are in the repo (`apps-script/FieldOSGateway.js`, Router wiring).
 
-| Repo file | Status |
-|---|---|
-| `apps-script/FieldOSGateway.js` | Added (copy of this folder’s gateway) |
-| `apps-script/Router.js` | Wired: secret verify, FieldOS actions, data-aware success response |
+**Verified with FieldOS `DATA_MODE=apps_script`:** list jobs, job detail, Drive upload, `register_recording`, process queue.
 
-**Not done:** Google Apps Script editor upload, Web App redeploy, `.env` changes, or live Sheets access.
+Live Web App URL / secrets remain in local `.env` only (never commit). Further Apps Script editor deploys are still a manual gate.
 
 ## Files in this folder
 
 | File | Purpose |
 |---|---|
-| `FieldOSGateway.js` | Canonical proposed source (kept for review history) |
+| `FieldOSGateway.js` | Canonical proposed source (kept for review history; mirrored in `apps-script/`) |
+| `FieldOSDisplayLookup.js` | Project/customer display-name helpers (mirrored in `apps-script/`) |
 | `README.md` | Merge / deploy guide |
+| `DOGET_MERGE_PROPOSAL.md` | Inventory + plan for conflicting Apps Script `doGet` recorder entry points. **Deferred:** Phase 2 FieldOS uses doPost only; do not merge `doGet` for Phase 2. |
+| `DoGetMerged.js` | Proposed sole `doGet` implementation for review only — **not** wired into production `Router.js` |
 
 ## Remaining manual steps in Google Apps Script (after approval)
 

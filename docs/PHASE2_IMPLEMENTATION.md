@@ -1,47 +1,106 @@
 # Phase 2 Implementation
 
-**Date:** 2026-07-18  
-**Scope:** Connect FieldOS to Apps Script for real jobs + recording registration + process enqueue, while preserving `DATA_MODE=mock`.
+**Date:** 2026-07-22  
+**Status:** Verified against live Apps Script + Shared Drive (local Docker FieldOS).  
+**Scope:** Connect FieldOS to Apps Script for real jobs, Drive recording upload, `register_recording`, and `process_voice_dictation` enqueue, while preserving `DATA_MODE=mock`.
 
 ---
 
-## 1. Discovered production API (summary)
+## 1. Verified end-to-end
 
-Confirmed `doPost` actions only:
+| Capability | Result |
+|---|---|
+| Apps Script job reads (`list_jobs_for_staff`) | Working |
+| Job detail (`get_job_detail`) | Working |
+| Google Drive recording upload | Working (Shared Drive + full Drive scope) |
+| `register_recording` → `tbl_recordings` | Working |
+| Frontend recording display | Working |
+| `process_voice_dictation` queueing | Working |
+| Duplicate recording rows | None observed in smoke |
+| Orphan Drive files after failed register | Cleaned (delete, with Shared Drive trash fallback) |
+| Secret leaks in API logs | None observed in smoke |
+| Backend tests | Passing |
 
-- `process_voice_dictation` (webhook_secret)
-- `execute_worker` (webhook_secret)
-
-Missing HTTP for list jobs, job detail, register recording. Full contract: `docs/APPS_SCRIPT_API.md`.
+---
 
 ## 2. What was implemented
 
 | Area | Change |
 |---|---|
-| Mode | `DATA_MODE=mock` (unchanged) + `DATA_MODE=apps_script` |
+| Mode | `DATA_MODE=mock` (default) + `DATA_MODE=apps_script` |
 | Abstraction | `MockJobRepository` / `AppsScriptJobRepository` via `JobService` |
-| Apps Script client | Expanded actions; timeouts; validated responses; secrets redacted from logs |
-| Proposed Apps Script | `apps-script-proposed/FieldOSGateway.js` — **not** applied to production `apps-script/` |
+| Apps Script client | Gateway actions + confirmed `process_voice_dictation`; timeouts; validated responses; redirects followed; secrets redacted from logs |
+| Apps Script (repo) | `apps-script/FieldOSGateway.js` + Router wiring for FieldOS actions |
 | Recordings | Drive upload from FastAPI + `register_recording` (no large audio through Apps Script) |
+| Drive | Full scope `https://www.googleapis.com/auth/drive`; `supportsAllDrives=True`; orphan delete/trash fallback |
 | Process | Reuses confirmed `process_voice_dictation` |
-| Tests | Mock mode + mocked Apps Script HTTP |
+| Tests | Mock mode + mocked Apps Script HTTP + Drive upload unit tests |
 | Docs | `APPS_SCRIPT_API.md`, `PHASE2_IMPLEMENTATION.md`, `PHASE2_SETUP.md` |
 
-## 3. Column mapping status
+---
 
-| Field | Status |
+## 3. Confirmed live schema (`tbl_job_sheets`)
+
+| FieldOS env | Live header | Notes |
+|---|---|---|
+| `JOB_ASSIGNMENT_COLUMN` | `staff_id` | Staff assignment |
+| `JOB_DATE_COLUMN` | `date` | Job date |
+| `JOB_PROJECT_COLUMN` | `project_id` | Project key (API may surface as `project_name`) |
+| `JOB_CUSTOMER_COLUMN` | `customer_name` | **Not a job-sheet column** — API display field; resolve later via `project_id` → projects/customers |
+
+Also confirmed on jobs / processing paths: `job_sheet_id`, `processing_status`, `processing_error`, `approval_status`, and related processing timestamps.
+
+**Local test account (apps_script smoke):** demo login mapped to staff ID `STAFF-9012C021` via `DEMO_STAFF_ID` in local `.env` (never commit real `.env`).
+
+---
+
+## 4. Google Drive (recordings)
+
+| Requirement | Detail |
 |---|---|
-| `job_sheet_id`, `processing_*`, `approval_status` | **Confirmed** in Apps Script + live headers |
-| `staff_id`, `date`, `project_id` | **Confirmed** live `tbl_job_sheets` headers (FieldOS env defaults) |
-| `customer_name` | **Not on job sheet** — API display field; resolve via `project_id` → `tbl_projects` → customer (lookup TBD) |
+| OAuth scope | Full Drive: `https://www.googleapis.com/auth/drive` (`drive.file` is insufficient for the existing Shared Drive folder) |
+| Folder | Shared Drive folder ID in `RECORDINGS_FOLDER_ID` |
+| Access | Service account email as **Content manager** (or equivalent write/delete) on that Shared Drive / folder |
+| API flags | `supportsAllDrives=True` on `files().get`, `files().create`, `files().delete`, and trash fallback `files().update` |
+| Credentials | Host path `fieldos/secrets/service-account.json` → container `/app/secrets/service-account.json` (compose bind mount, read-only) |
+| Env | `GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/service-account.json` |
+| Secrets | Never commit `secrets/`, service-account JSON, webhook secrets, or `.env` |
 
-## 4. Safety
+On Shared Drives, permanent `files().delete` can return `notFound`; FieldOS falls back to trash so orphans leave the active folder.
 
-- Production `apps-script/` untouched
-- No deploy performed
-- Secrets never returned to browser
-- `.env` not overwritten by tooling beyond `.env.example` template
+---
 
-## 5. Stop point
+## 5. Safety
 
-Do **not** deploy Apps Script or connect production Sheets until you approve the proposed gateway merge and confirm live column headers.
+- Browser never receives `webhook_secret` or Apps Script URL
+- FastAPI logs redact secrets; do not log raw payloads or credential contents
+- `.env` and `fieldos/secrets/` stay local / gitignored
+- This finalize pass does **not** deploy Apps Script or AWS
+
+---
+
+## 6. Verification checklist
+
+See **Phase 2 verification checklist** in `docs/PHASE2_SETUP.md`.
+
+---
+
+## 7. Out of scope / known issues / future work
+
+| Item | Status |
+|---|---|
+| Customer display via `project_id` → `tbl_projects` → `tbl_customers` | **Partial** — repo lookup added with assumed columns (`project_name` / `customer_id` / `customer_name`); **live headers not yet confirmed**. Live `project_id` values may already be display strings (e.g. job `21759f5d`). Confirm headers before relying on customer enrichment. |
+| Apps Script `doGet` recorder conflict | **Deferred** — Phase 2 FieldOS only uses `doPost`. Proposal remains in `apps-script-proposed/DOGET_MERGE_PROPOSAL.md`. Do not merge until a dedicated Apps Script web-entry cleanup. |
+| AWS hosting / Odoo cutover | Future |
+| Local Python | Use **3.12** for backend venv (Docker already 3.12); see `fieldos/README.md` |
+
+### Confirmed table PKs (from `Repositories.js`)
+
+| Table | PK |
+|---|---|
+| `tbl_job_sheets` | `job_sheet_id` |
+| `tbl_projects` | `project_id` |
+| `tbl_customers` | `customer_id` |
+
+**Confirmed FK on jobs:** `tbl_job_sheets.project_id` (intended → `tbl_projects.project_id`).  
+**Unconfirmed until live header dump:** display columns on projects/customers and `tbl_projects.customer_id`.
