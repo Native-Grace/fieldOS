@@ -141,6 +141,10 @@ class AppsScriptClient:
                 code = 403
             if "not found" in lower:
                 code = 404
+            if "processing" in lower and ("cannot" in lower or "while" in lower or "blocked" in lower):
+                code = 409
+            if "drive cleanup" in lower or "could not delete recording file" in lower:
+                code = 502
             raise AppsScriptError(message, http_status=code, apps_status=apps_status)
 
         data["proxied"] = True
@@ -206,3 +210,11 @@ class AppsScriptClient:
     async def register_recording(self, body: dict[str, Any]) -> dict[str, Any]:
         safe_body = redact_secrets(body)
         return await self._post("register_recording", {**safe_body, **self._column_payload()})
+
+    async def invalidate_recording(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("invalidate_recording", {**safe_body, **self._column_payload()})
+
+    async def delete_recording(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("delete_recording", {**safe_body, **self._column_payload()})

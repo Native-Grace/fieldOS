@@ -13,6 +13,11 @@ from app.core.logging import get_logger, log_extra
 from app.services.apps_script import AppsScriptClient
 from app.services.apps_script_repository import AppsScriptJobRepository
 from app.services.mock_repository import MockJobRepository
+from app.services.recording_files import (
+    sanitize_invalid_reason,
+    sanitize_recording_filename,
+    validate_upload_file,
+)
 
 logger = get_logger(__name__)
 
@@ -54,41 +59,35 @@ class JobService:
     def _since(self, days: int) -> date:
         return date.today() - timedelta(days=days)
 
-    def _ext_for_mime(self, content_type: str) -> str:
-        if "mp4" in content_type:
-            return "mp4"
-        if "mpeg" in content_type or content_type == "audio/mp3":
-            return "mp3"
-        if "ogg" in content_type:
-            return "ogg"
-        if "wav" in content_type:
-            return "wav"
-        return "webm"
-
-    def _validate_upload(self, file: UploadFile, data: bytes) -> str:
-        content_type = (file.content_type or "").split(";")[0].strip().lower()
-        if content_type not in self.settings.allowed_mimes:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported MIME type '{content_type}'. Allowed: {sorted(self.settings.allowed_mimes)}",
-            )
-        if not data:
-            raise HTTPException(status_code=400, detail="Empty upload rejected")
+    def _validate_upload(self, file: UploadFile, data: bytes) -> tuple[str, str, str]:
         min_bytes = int(getattr(self.settings, "min_recording_upload_bytes", 1024) or 1024)
-        if len(data) < min_bytes:
+        return validate_upload_file(
+            file,
+            data,
+            min_bytes=min_bytes,
+            max_bytes=self.settings.max_upload_bytes,
+            max_mb=self.settings.max_upload_mb,
+        )
+
+    def _assert_not_processing(self, job: dict[str, Any]) -> None:
+        if str(job.get("processing_status") or "").strip().lower() == "processing":
             raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Recording contains no audio (file too small). "
-                    f"Received {len(data)} bytes; minimum is {min_bytes} bytes. Please record again."
-                ),
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot change recordings while the job is Processing.",
             )
-        if len(data) > self.settings.max_upload_bytes:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File exceeds max size of {self.settings.max_upload_mb} MB",
-            )
-        return content_type
+
+    def _audit(self, action: str, *, staff_id: str, job_sheet_id: str, recording_id: str, **extra: Any) -> None:
+        log_extra(
+            logger,
+            20,
+            "Recording management audit",
+            action=action,
+            staff_id=staff_id,
+            job_sheet_id=job_sheet_id,
+            recording_id=recording_id,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            **extra,
+        )
 
     async def list_mine(self, staff_id: str, days: int | None = None) -> tuple[list[dict[str, Any]], int]:
         day_count = self._day_count(days)
@@ -119,10 +118,18 @@ class JobService:
     ) -> dict[str, Any]:
         await self.get_job_for_staff(job_sheet_id, staff_id)
         data = await file.read()
-        content_type = self._validate_upload(file, data)
+        content_type, ext, safe_original = self._validate_upload(file, data)
 
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        ext = self._ext_for_mime(content_type)
+        # Prefer job-scoped Drive name; keep sanitised original extension.
+        recording_name = sanitize_recording_filename(
+            f"{job_sheet_id}-REC-{stamp}.{ext}",
+            fallback_ext=ext,
+        )
+        # If client supplied a meaningful original name, append stem hint in metadata only via name.
+        if safe_original and safe_original.lower() != recording_name.lower():
+            # Keep deterministic Drive/object name; original is reflected when extension differs only.
+            recording_name = f"{job_sheet_id}-REC-{stamp}.{ext}"
 
         if isinstance(self.repo, MockJobRepository):
             order = self.repo.next_recording_order(job_sheet_id)
@@ -132,6 +139,7 @@ class JobService:
                 "recording_id": recording_id,
                 "job_sheet_id": job_sheet_id,
                 "recording_name": recording_name,
+                "original_filename": safe_original,
                 "recording_order": order,
                 "duration_seconds": duration_seconds,
                 "transcript": "",
@@ -141,7 +149,6 @@ class JobService:
             }
             saved = self.repo.create_recording_local(row, data, content_type)
         else:
-            recording_name = f"{job_sheet_id}-REC-{stamp}.{ext}"
             saved = await self.repo.register_recording_remote(
                 job_sheet_id=job_sheet_id,
                 staff_id=staff_id,
@@ -159,13 +166,13 @@ class JobService:
             processing_triggered = str(result.get("status", "")).lower() == "success"
             processing_message = str(result.get("message", ""))
 
-        log_extra(
-            logger,
-            20,
-            "Recording saved",
+        self._audit(
+            "upload_recording",
+            staff_id=staff_id,
             job_sheet_id=job_sheet_id,
-            recording_id=saved.get("recording_id"),
+            recording_id=str(saved.get("recording_id") or ""),
             bytes=len(data),
+            mime=content_type,
             processing_triggered=processing_triggered,
             data_mode=self.settings.data_mode,
         )
@@ -179,6 +186,81 @@ class JobService:
             "recording_order": int(saved.get("recording_order") or 0),
             "processing_triggered": processing_triggered,
             "processing_message": processing_message,
+        }
+
+    async def invalidate_recording(
+        self,
+        job_sheet_id: str,
+        recording_id: str,
+        staff_id: str,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        safe_reason = sanitize_invalid_reason(reason)
+        job = await self.get_job_for_staff(job_sheet_id, staff_id)
+        self._assert_not_processing(job)
+
+        if isinstance(self.repo, MockJobRepository):
+            result = self.repo.invalidate_recording_local(
+                job_sheet_id, staff_id, recording_id, safe_reason
+            )
+        else:
+            result = await self.repo.ainvalidate_recording(
+                job_sheet_id=job_sheet_id,
+                staff_id=staff_id,
+                recording_id=recording_id,
+                reason=safe_reason,
+            )
+
+        self._audit(
+            "invalidate_recording",
+            staff_id=staff_id,
+            job_sheet_id=job_sheet_id,
+            recording_id=recording_id,
+            outcome="success",
+            idempotent=bool(result.get("idempotent")),
+        )
+        return {
+            "status": "success",
+            "job_sheet_id": job_sheet_id,
+            "recording_id": recording_id,
+            "recording_status": "Invalid",
+            "invalid_reason": str(result.get("invalid_reason") or safe_reason),
+            "message": "Recording marked Invalid.",
+        }
+
+    async def delete_recording(
+        self,
+        job_sheet_id: str,
+        recording_id: str,
+        staff_id: str,
+    ) -> dict[str, Any]:
+        job = await self.get_job_for_staff(job_sheet_id, staff_id)
+        self._assert_not_processing(job)
+
+        if isinstance(self.repo, MockJobRepository):
+            result = self.repo.delete_recording_local(job_sheet_id, staff_id, recording_id)
+            outcome = str(result.get("drive_outcome") or "deleted")
+        else:
+            result = await self.repo.adelete_recording(
+                job_sheet_id=job_sheet_id,
+                staff_id=staff_id,
+                recording_id=recording_id,
+            )
+            outcome = str(result.get("drive_outcome") or "deleted")
+
+        self._audit(
+            "delete_recording",
+            staff_id=staff_id,
+            job_sheet_id=job_sheet_id,
+            recording_id=recording_id,
+            outcome=outcome,
+        )
+        return {
+            "status": "success",
+            "job_sheet_id": job_sheet_id,
+            "recording_id": recording_id,
+            "recording_status": "Deleted",
+            "message": "Recording deleted.",
         }
 
     async def trigger_process(

@@ -58,6 +58,10 @@ function fieldosRouteRequest(payload) {
       return FieldOSGateway.getJobDetail(payload);
     case "register_recording":
       return FieldOSGateway.registerRecording(payload);
+    case "invalidate_recording":
+      return FieldOSGateway.invalidateRecording(payload);
+    case "delete_recording":
+      return FieldOSGateway.deleteRecording(payload);
     default:
       return null;
   }
@@ -82,7 +86,7 @@ function fieldosJsonResponse(status, action, message, recordId, data) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-const FieldOSGateway = {
+var FieldOSGateway = {
 
   _col: function(payload, key, fallback) {
     const v = payload[key];
@@ -157,6 +161,7 @@ const FieldOSGateway = {
       duration_seconds: Number(row.duration_seconds || 0),
       transcript: String(row.transcript || ""),
       status: String(row.status || ""),
+      invalid_reason: String(row.invalid_reason || row.processing_error || ""),
       created_by: String(row.created_by || ""),
       created_at: row.created_at || null
     };
@@ -166,6 +171,87 @@ const FieldOSGateway = {
     if (!job) throw new Error("Job sheet not found.");
     if (String(job[assignmentColumn] || "") !== String(staffId)) {
       throw new Error("Forbidden: Job is not assigned to this staff member.");
+    }
+  },
+
+  _assertJobNotProcessing: function(job) {
+    const status = String(job && job.processing_status != null ? job.processing_status : "")
+      .trim()
+      .toLowerCase();
+    if (status === "processing") {
+      throw new Error("Cannot change recordings while the job is Processing.");
+    }
+  },
+
+  _findRecordingForJob: function(jobSheetId, recordingId) {
+    const rid = String(recordingId || "").trim();
+    const jid = String(jobSheetId || "").trim();
+    if (!rid || !jid) return null;
+    let row = null;
+    try {
+      row = DB.findById("tbl_recordings", "recording_id", rid);
+    } catch (err) {
+      row = null;
+    }
+    if (!row) return null;
+    if (String(row.job_sheet_id || "") !== jid) return null;
+    return row;
+  },
+
+  _sanitizeReason: function(reason) {
+    let text = String(reason == null ? "" : reason).replace(/\s+/g, " ").trim();
+    if (!text) text = "Marked invalid by user.";
+    if (text.length > 200) text = text.slice(0, 200).trim();
+    return text || "Marked invalid by user.";
+  },
+
+  /**
+   * Permanent delete first; trash fallback for permission / notFound edge cases.
+   * Never logs Drive file IDs.
+   * @returns {"deleted"|"trashed"}
+   */
+  _cleanupDriveRecordingFile: function(fileId) {
+    const id = String(fileId || "").trim();
+    if (!id) return "deleted";
+    let permanentErr = null;
+    try {
+      if (typeof Drive !== "undefined" && Drive.Files && typeof Drive.Files.remove === "function") {
+        Drive.Files.remove(id, { supportsAllDrives: true });
+        return "deleted";
+      }
+    } catch (err) {
+      permanentErr = err;
+    }
+    try {
+      // DriveApp trash fallback (also used when Advanced Drive is unavailable).
+      DriveApp.getFileById(id).setTrashed(true);
+      return "trashed";
+    } catch (trashErr) {
+      const msg = permanentErr && permanentErr.message ? permanentErr.message : "";
+      const tmsg = trashErr && trashErr.message ? trashErr.message : String(trashErr);
+      throw new Error(
+        "Drive cleanup failed. Recording row was not deleted. " +
+          String(tmsg || msg || "unknown").slice(0, 120)
+      );
+    }
+  },
+
+  _headerSafeUpdateRecording: function(recordingId, patch) {
+    // Prefer DB.updateRecord; skips missing columns via try/catch per-field if needed.
+    try {
+      DB.updateRecord("tbl_recordings", "recording_id", recordingId, patch);
+      return;
+    } catch (err) {
+      // Retry without optional columns that may be absent on older sheets.
+      const slim = {
+        status: patch.status
+      };
+      if (patch.invalid_reason != null) slim.invalid_reason = patch.invalid_reason;
+      try {
+        DB.updateRecord("tbl_recordings", "recording_id", recordingId, slim);
+      } catch (err2) {
+        DB.updateRecord("tbl_recordings", "recording_id", recordingId, { status: patch.status });
+      }
     }
   },
 
@@ -316,6 +402,123 @@ const FieldOSGateway = {
         recording_drive_file_id: row.recording_drive_file_id,
         recording_order: recordingOrder,
         status: "Saved"
+      }
+    };
+  },
+
+  invalidateRecording: function(payload) {
+    const jobSheetId = String(payload.job_sheet_id || "").trim();
+    const recordingId = String(payload.recording_id || "").trim();
+    const staffId = String(payload.actor_staff_id || payload.staff_id || "").trim();
+    if (!jobSheetId) throw new Error("Missing required attribute: job_sheet_id.");
+    if (!recordingId) throw new Error("Missing required attribute: recording_id.");
+    if (!staffId) throw new Error("Missing required attribute: staff_id.");
+
+    const assignmentColumn = this._col(payload, "assignment_column", "staff_id");
+    const job = JobSheetRepository.findById(jobSheetId);
+    this._assertAssigned(job, staffId, assignmentColumn);
+    this._assertJobNotProcessing(job);
+
+    const row = this._findRecordingForJob(jobSheetId, recordingId);
+    if (!row) throw new Error("Recording not found for this job.");
+
+    const reason = this._sanitizeReason(payload.reason);
+    const alreadyInvalid = String(row.status || "").trim() === "Invalid";
+    if (!alreadyInvalid) {
+      const patch = {
+        status: "Invalid",
+        invalid_reason: reason,
+        updated_at: new Date()
+      };
+      this._headerSafeUpdateRecording(recordingId, patch);
+    }
+
+    SyncRepository.create({
+      record_id: jobSheetId,
+      target_system: "FieldOS_API",
+      status: "Success",
+      request_payload: JSON.stringify({
+        action: "invalidate_recording",
+        job_sheet_id: jobSheetId,
+        recording_id: recordingId,
+        actor_staff_id: staffId
+      }),
+      response_payload: JSON.stringify({
+        recording_id: recordingId,
+        recording_status: "Invalid",
+        idempotent: alreadyInvalid
+      }),
+      timestamp: new Date()
+    });
+
+    return {
+      action: "invalidate_recording",
+      message: alreadyInvalid ? "Recording already Invalid." : "Recording marked Invalid.",
+      job_sheet_id: jobSheetId,
+      data: {
+        recording_id: recordingId,
+        recording_status: "Invalid",
+        invalid_reason: alreadyInvalid
+          ? String(row.invalid_reason || row.processing_error || reason)
+          : reason,
+        idempotent: alreadyInvalid
+      }
+    };
+  },
+
+  deleteRecording: function(payload) {
+    const jobSheetId = String(payload.job_sheet_id || "").trim();
+    const recordingId = String(payload.recording_id || "").trim();
+    const staffId = String(payload.actor_staff_id || payload.staff_id || "").trim();
+    if (!jobSheetId) throw new Error("Missing required attribute: job_sheet_id.");
+    if (!recordingId) throw new Error("Missing required attribute: recording_id.");
+    if (!staffId) throw new Error("Missing required attribute: staff_id.");
+
+    const assignmentColumn = this._col(payload, "assignment_column", "staff_id");
+    const job = JobSheetRepository.findById(jobSheetId);
+    this._assertAssigned(job, staffId, assignmentColumn);
+    this._assertJobNotProcessing(job);
+
+    const row = this._findRecordingForJob(jobSheetId, recordingId);
+    if (!row) throw new Error("Recording not found for this job.");
+
+    const driveId = String(row.recording_drive_file_id || "").trim();
+    const driveOutcome = this._cleanupDriveRecordingFile(driveId);
+
+    const deleted = DB.deleteWhere("tbl_recordings", {
+      recording_id: recordingId,
+      job_sheet_id: jobSheetId
+    });
+    if (!deleted) {
+      throw new Error("Recording not found for this job.");
+    }
+
+    SyncRepository.create({
+      record_id: jobSheetId,
+      target_system: "FieldOS_API",
+      status: "Success",
+      request_payload: JSON.stringify({
+        action: "delete_recording",
+        job_sheet_id: jobSheetId,
+        recording_id: recordingId,
+        actor_staff_id: staffId
+      }),
+      response_payload: JSON.stringify({
+        recording_id: recordingId,
+        recording_status: "Deleted",
+        drive_outcome: driveOutcome
+      }),
+      timestamp: new Date()
+    });
+
+    return {
+      action: "delete_recording",
+      message: "Recording deleted.",
+      job_sheet_id: jobSheetId,
+      data: {
+        recording_id: recordingId,
+        recording_status: "Deleted",
+        drive_outcome: driveOutcome
       }
     };
   }

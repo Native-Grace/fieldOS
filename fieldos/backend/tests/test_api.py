@@ -184,7 +184,7 @@ def test_reject_empty_upload(client: TestClient) -> None:
         files={"file": ("empty.webm", io.BytesIO(b""), "audio/webm")},
         data={"duration_seconds": "0"},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_reject_tiny_webm_stub_upload(client: TestClient) -> None:
@@ -212,7 +212,7 @@ def test_reject_bad_mime(client: TestClient) -> None:
         files={"file": ("note.txt", io.BytesIO(b"not-audio"), "text/plain")},
         data={"duration_seconds": "1"},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_reject_oversized_upload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -241,7 +241,7 @@ def test_reject_oversized_upload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
             data={"duration_seconds": "1"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
     _clear_settings()
 
 

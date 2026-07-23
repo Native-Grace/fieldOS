@@ -58,6 +58,7 @@ class RecordingOut(BaseModel):
     duration_seconds: float = 0
     transcript: str = ""
     status: str = ""
+    invalid_reason: str = ""
     created_by: str = ""
     created_at: Optional[Union[datetime, str]] = None
 
@@ -80,6 +81,19 @@ class RecordingUploadResponse(BaseModel):
     recording_order: int
     processing_triggered: bool
     processing_message: str
+
+
+class InvalidateRecordingRequest(BaseModel):
+    reason: str = Field(default="Marked invalid by user.", max_length=200)
+
+
+class RecordingMutationResponse(BaseModel):
+    status: str
+    job_sheet_id: str
+    recording_id: str
+    recording_status: str
+    message: str = ""
+    invalid_reason: str = ""
 
 
 class ProcessRequest(BaseModel):

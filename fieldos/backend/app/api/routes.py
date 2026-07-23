@@ -7,6 +7,7 @@ from app.core.config import Settings, get_settings
 from app.core.security import create_access_token, get_current_claims
 from app.models.schemas import (
     HealthResponse,
+    InvalidateRecordingRequest,
     JobDetailResponse,
     JobListResponse,
     JobSummary,
@@ -15,6 +16,7 @@ from app.models.schemas import (
     ProcessRequest,
     ProcessResponse,
     ReadyResponse,
+    RecordingMutationResponse,
     RecordingOut,
     RecordingUploadResponse,
     StaffOut,
@@ -198,6 +200,7 @@ async def job_recordings(
 
 
 @router.post("/jobs/{job_sheet_id}/recordings", response_model=RecordingUploadResponse)
+@router.post("/jobs/{job_sheet_id}/recordings/upload", response_model=RecordingUploadResponse)
 async def upload_recording(
     job_sheet_id: str,
     file: UploadFile = File(...),
@@ -215,6 +218,44 @@ async def upload_recording(
         trigger_processing=trigger_processing,
     )
     return RecordingUploadResponse(**result)
+
+
+@router.post(
+    "/jobs/{job_sheet_id}/recordings/{recording_id}/invalidate",
+    response_model=RecordingMutationResponse,
+)
+async def invalidate_recording(
+    job_sheet_id: str,
+    recording_id: str,
+    body: InvalidateRecordingRequest,
+    claims: dict = Depends(get_current_claims),
+    service: JobService = Depends(job_service),
+) -> RecordingMutationResponse:
+    result = await service.invalidate_recording(
+        job_sheet_id=job_sheet_id,
+        recording_id=recording_id,
+        staff_id=str(claims["sub"]),
+        reason=body.reason,
+    )
+    return RecordingMutationResponse(**result)
+
+
+@router.delete(
+    "/jobs/{job_sheet_id}/recordings/{recording_id}",
+    response_model=RecordingMutationResponse,
+)
+async def delete_recording(
+    job_sheet_id: str,
+    recording_id: str,
+    claims: dict = Depends(get_current_claims),
+    service: JobService = Depends(job_service),
+) -> RecordingMutationResponse:
+    result = await service.delete_recording(
+        job_sheet_id=job_sheet_id,
+        recording_id=recording_id,
+        staff_id=str(claims["sub"]),
+    )
+    return RecordingMutationResponse(**result)
 
 
 @router.post("/jobs/{job_sheet_id}/process", response_model=ProcessResponse)

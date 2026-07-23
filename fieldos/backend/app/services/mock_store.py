@@ -103,6 +103,32 @@ class MockStore:
         self._write(self.recordings_path, rows)
         return row
 
+    def get_recording(self, recording_id: str) -> dict[str, Any] | None:
+        for row in self._read(self.recordings_path):
+            if str(row.get("recording_id")) == str(recording_id):
+                return row
+        return None
+
+    def update_recording(self, recording_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        rows = self._read(self.recordings_path)
+        updated = None
+        for row in rows:
+            if str(row.get("recording_id")) == str(recording_id):
+                row.update(updates)
+                updated = row
+                break
+        if updated is not None:
+            self._write(self.recordings_path, rows)
+        return updated
+
+    def delete_recording(self, recording_id: str) -> bool:
+        rows = self._read(self.recordings_path)
+        next_rows = [r for r in rows if str(r.get("recording_id")) != str(recording_id)]
+        if len(next_rows) == len(rows):
+            return False
+        self._write(self.recordings_path, next_rows)
+        return True
+
     def update_job_status(self, job_sheet_id: str, updates: dict[str, Any]) -> None:
         jobs = self._read(self.jobs_path)
         for job in jobs:

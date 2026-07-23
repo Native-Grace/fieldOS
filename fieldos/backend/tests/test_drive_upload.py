@@ -521,7 +521,7 @@ def test_api_mime_rejection(apps_script_drive_env: TestClient) -> None:
             files={"file": ("note.txt", io.BytesIO(b"not-audio"), "text/plain")},
             data={"duration_seconds": "1", "trigger_processing": "false"},
         )
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_api_size_rejection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -553,5 +553,5 @@ def test_api_size_rejection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
                 files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                 data={"duration_seconds": "1", "trigger_processing": "false"},
             )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
     _clear_settings()

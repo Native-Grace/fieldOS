@@ -240,27 +240,60 @@ def delete_drive_file(settings: Settings, file_id: Optional[str]) -> None:
     Attempts permanent delete first. On Shared Drives, delete can return notFound or
     permission errors even when the file exists; only then fall back to trash.
     """
-    if not file_id or not drive_upload_configured(settings):
-        return
+    _cleanup_drive_recording_file(settings, file_id, required=False)
+
+
+def cleanup_drive_recording_file(
+    settings: Settings,
+    file_id: Optional[str],
+    *,
+    required: bool = True,
+) -> str:
+    """Delete or trash a Drive recording. Returns outcome: deleted|trashed|skipped|failed.
+
+    When required=True, raises HTTP 502 if cleanup cannot complete.
+    """
+    return _cleanup_drive_recording_file(settings, file_id, required=required)
+
+
+def _cleanup_drive_recording_file(
+    settings: Settings,
+    file_id: Optional[str],
+    *,
+    required: bool,
+) -> str:
+    if not file_id:
+        return "skipped"
+    if not drive_upload_configured(settings):
+        if required:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Drive is not configured; cannot clean up recording file.",
+            )
+        return "skipped"
     try:
         service = _drive_service(settings)
         try:
             service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
-            log_extra(logger, 20, "Deleted orphan Drive recording", drive_file_id=file_id)
-            return
+            log_extra(logger, 20, "Deleted Drive recording file", outcome="deleted")
+            return "deleted"
         except Exception as delete_exc:
             http_status, reason = _google_error_reason(delete_exc)
             if not _should_trash_after_delete_failure(http_status, reason):
                 log_extra(
                     logger,
                     40,
-                    "Failed to delete orphan Drive recording (no trash fallback)",
-                    drive_file_id=file_id,
+                    "Failed to delete Drive recording (no trash fallback)",
                     error=type(delete_exc).__name__,
                     http_status=http_status,
                     reason=reason,
                 )
-                return
+                if required:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="Could not delete recording file from Drive. Recording was not removed.",
+                    ) from delete_exc
+                return "failed"
             service.files().update(
                 fileId=file_id,
                 body={"trashed": True},
@@ -269,22 +302,30 @@ def delete_drive_file(settings: Settings, file_id: Optional[str]) -> None:
             log_extra(
                 logger,
                 20,
-                "Trashed orphan Drive recording after delete fallback",
-                drive_file_id=file_id,
+                "Trashed Drive recording after delete fallback",
+                outcome="trashed",
                 delete_http_status=http_status,
                 delete_reason=reason,
             )
+            return "trashed"
+    except HTTPException:
+        raise
     except Exception as exc:
         http_status, reason = _google_error_reason(exc)
         log_extra(
             logger,
             40,
-            "Failed to delete orphan Drive recording",
-            drive_file_id=file_id,
+            "Failed to clean up Drive recording",
             error=type(exc).__name__,
             http_status=http_status,
             reason=reason,
         )
+        if required:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not delete recording file from Drive. Recording was not removed.",
+            ) from exc
+        return "failed"
 
 
 def redact_secrets(obj: Any) -> Any:

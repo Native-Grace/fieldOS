@@ -50,10 +50,15 @@ export async function api(path, options = {}) {
 }
 
 /** Upload with progress via XHR (fetch has no upload progress). */
-export function uploadRecording(jobSheetId, blob, { durationSeconds, triggerProcessing, onProgress, mimeType }) {
+export function uploadRecording(
+  jobSheetId,
+  blob,
+  { durationSeconds, triggerProcessing, onProgress, mimeType, filename } = {}
+) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/api/v1/jobs/${encodeURIComponent(jobSheetId)}/recordings`);
+    const path = `/api/v1/jobs/${encodeURIComponent(jobSheetId)}/recordings/upload`;
+    xhr.open("POST", path);
     const token = getToken();
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 
@@ -71,13 +76,21 @@ export function uploadRecording(jobSheetId, blob, { durationSeconds, triggerProc
         body = { message: xhr.responseText };
       }
       if (xhr.status >= 200 && xhr.status < 300) resolve(body);
-      else reject(new Error(body.detail || body.message || `Upload failed (${xhr.status})`));
+      else {
+        const detail = body.detail || body.message || `Upload failed (${xhr.status})`;
+        reject(new Error(typeof detail === "string" ? detail : JSON.stringify(detail)));
+      }
     };
     xhr.onerror = () => reject(new Error("Network error during upload"));
 
     const form = new FormData();
-    const ext = (mimeType || blob.type || "audio/webm").includes("mp4") ? "mp4" : "webm";
-    form.append("file", blob, `recording.${ext}`);
+    const type = mimeType || blob.type || "audio/webm";
+    let name = filename || (blob && blob.name) || "";
+    if (!name) {
+      const ext = type.includes("mp4") ? "mp4" : type.includes("mpeg") || type.includes("mp3") ? "mp3" : type.includes("wav") ? "wav" : type.includes("ogg") ? "ogg" : type.includes("flac") ? "flac" : "webm";
+      name = `recording.${ext}`;
+    }
+    form.append("file", blob, name);
     form.append("duration_seconds", String(durationSeconds || 0));
     form.append("trigger_processing", triggerProcessing ? "true" : "false");
     xhr.send(form);

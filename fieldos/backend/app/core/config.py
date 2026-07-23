@@ -48,7 +48,10 @@ class Settings(BaseSettings):
     # Reject header-only / empty WebM stubs (e.g. 18-byte EBML shells) before Drive write.
     min_recording_upload_bytes: int = Field(default=1024, alias="MIN_RECORDING_UPLOAD_BYTES")
     allowed_audio_mimes: str = Field(
-        default="audio/webm,audio/mp4,audio/mpeg,audio/ogg,audio/wav,video/webm",
+        default=(
+            "audio/webm,video/webm,audio/wav,audio/x-wav,audio/mpeg,audio/mp3,"
+            "audio/mp4,video/mp4,audio/x-m4a,audio/ogg,application/ogg,audio/flac,audio/x-flac"
+        ),
         alias="ALLOWED_AUDIO_MIMES",
     )
 

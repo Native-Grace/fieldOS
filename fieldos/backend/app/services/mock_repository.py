@@ -127,3 +127,73 @@ class MockJobRepository:
 
     def next_recording_order(self, job_sheet_id: str) -> int:
         return self.store.next_recording_order(job_sheet_id)
+
+    def invalidate_recording_local(
+        self,
+        job_sheet_id: str,
+        staff_id: str,
+        recording_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        job = self.get_job_for_staff(job_sheet_id, staff_id)
+        if str(job.get("processing_status") or "").strip().lower() == "processing":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot change recordings while the job is Processing.",
+            )
+        row = self.store.get_recording(recording_id)
+        if not row or str(row.get("job_sheet_id")) != str(job_sheet_id):
+            raise HTTPException(status_code=404, detail="Recording not found for this job.")
+        if str(row.get("status") or "").strip() == "Invalid":
+            return {
+                "recording_id": recording_id,
+                "job_sheet_id": job_sheet_id,
+                "recording_status": "Invalid",
+                "invalid_reason": str(row.get("invalid_reason") or reason),
+                "idempotent": True,
+            }
+        updated = self.store.update_recording(
+            recording_id,
+            {
+                "status": "Invalid",
+                "invalid_reason": reason,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {
+            "recording_id": recording_id,
+            "job_sheet_id": job_sheet_id,
+            "recording_status": "Invalid",
+            "invalid_reason": str((updated or {}).get("invalid_reason") or reason),
+            "idempotent": False,
+        }
+
+    def delete_recording_local(
+        self,
+        job_sheet_id: str,
+        staff_id: str,
+        recording_id: str,
+    ) -> dict[str, Any]:
+        job = self.get_job_for_staff(job_sheet_id, staff_id)
+        if str(job.get("processing_status") or "").strip().lower() == "processing":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot delete recordings while the job is Processing.",
+            )
+        row = self.store.get_recording(recording_id)
+        if not row or str(row.get("job_sheet_id")) != str(job_sheet_id):
+            raise HTTPException(status_code=404, detail="Recording not found for this job.")
+        # Local file cleanup (Drive IDs are LOCAL-* in mock).
+        url = str(row.get("recording_file_url") or "")
+        if url.startswith("file://"):
+            path = Path(url[7:])
+            if path.is_file():
+                path.unlink()
+        if not self.store.delete_recording(recording_id):
+            raise HTTPException(status_code=404, detail="Recording not found for this job.")
+        return {
+            "recording_id": recording_id,
+            "job_sheet_id": job_sheet_id,
+            "recording_status": "Deleted",
+            "drive_outcome": "deleted",
+        }

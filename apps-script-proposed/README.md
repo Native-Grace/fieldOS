@@ -20,6 +20,7 @@ Live Web App URL / secrets remain in local `.env` only (never commit). Further A
 | `FieldOSDisplayDiagnostics.js` | Read-only diagnostics + gated master seed apply + `testFieldOSDisplayResolveSample` (editor-only dual-read sample; not a doPost AuthZ bypass) |
 | `VoiceProcessing.js` | Queue facade `VoiceProcessing.executePipeline` + OpenAI Whisper FieldOS bridge (mirrored from `apps-script/`). Skips `Invalid` and already-`Processed` recordings. |
 | `OpenAI.js` | Whisper `transcribeAudio` helper (mirrored from `apps-script/`) |
+| `FieldOSGateway.js` | Includes `invalidate_recording` / `delete_recording` (Drive cleanup before row delete) |
 
 ### Live verification (Phase 2 voice path)
 

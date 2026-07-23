@@ -120,7 +120,9 @@ function routeRequest(payload) {
 
     case "list_jobs_for_staff":
     case "get_job_detail":
-    case "register_recording": {
+    case "register_recording":
+    case "invalidate_recording":
+    case "delete_recording": {
       const fieldosResult = fieldosRouteRequest(payload);
       if (!fieldosResult) {
         throw new Error(`Routing Failure: Action '${action}' is unsupported.`);

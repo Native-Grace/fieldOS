@@ -22,15 +22,27 @@ APPS_SCRIPT_ASSUMPTIONS = [
 
 def _raise_from_apps(exc: AppsScriptError) -> None:
     code = exc.http_status or 502
-    if code == 403:
+    message = str(exc) or "Apps Script error"
+    lower = message.lower()
+    if code == 403 or "forbidden" in lower:
         raise HTTPException(status_code=403, detail="Job is not assigned to this staff member") from exc
-    if code == 404:
-        raise HTTPException(status_code=404, detail="Job sheet not found") from exc
+    if code == 404 or "not found" in lower:
+        detail = "Recording not found for this job." if "recording" in lower else "Job sheet not found"
+        raise HTTPException(status_code=404, detail=detail) from exc
+    if code == 409 or "processing" in lower:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot change recordings while the job is Processing.",
+        ) from exc
     if code == 504:
         raise HTTPException(status_code=504, detail="Apps Script request timed out") from exc
     if code == 503:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    raise HTTPException(status_code=502, detail=str(exc) or "Apps Script error") from exc
+    # Prefer safe generic message — never leak Drive IDs from Apps Script text.
+    safe = message
+    if "drive" in lower and ("file" in lower or "cleanup" in lower):
+        safe = "Could not delete recording file from Drive. Recording was not removed."
+    raise HTTPException(status_code=502, detail=safe) from exc
 
 
 class AppsScriptJobRepository:
@@ -173,3 +185,60 @@ class AppsScriptJobRepository:
     ) -> dict[str, Any]:
         await self.aget_job_for_staff(job_sheet_id, staff_id)
         return await self.apps_script.process_voice_dictation(job_sheet_id, staff_email, force_reprocess)
+
+    async def ainvalidate_recording(
+        self,
+        *,
+        job_sheet_id: str,
+        staff_id: str,
+        recording_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.invalidate_recording(
+                {
+                    "job_sheet_id": job_sheet_id,
+                    "staff_id": staff_id,
+                    "actor_staff_id": staff_id,
+                    "recording_id": recording_id,
+                    "reason": reason,
+                }
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return {
+            "recording_id": recording_id,
+            "job_sheet_id": job_sheet_id,
+            "recording_status": str(data.get("recording_status") or "Invalid"),
+            "invalid_reason": str(data.get("invalid_reason") or reason),
+            "idempotent": bool(data.get("idempotent")),
+        }
+
+    async def adelete_recording(
+        self,
+        *,
+        job_sheet_id: str,
+        staff_id: str,
+        recording_id: str,
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.delete_recording(
+                {
+                    "job_sheet_id": job_sheet_id,
+                    "staff_id": staff_id,
+                    "actor_staff_id": staff_id,
+                    "recording_id": recording_id,
+                }
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return {
+            "recording_id": recording_id,
+            "job_sheet_id": job_sheet_id,
+            "recording_status": "Deleted",
+            "drive_outcome": str(data.get("drive_outcome") or "deleted"),
+        }
