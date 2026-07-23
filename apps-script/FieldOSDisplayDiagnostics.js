@@ -8,6 +8,7 @@
  *   4) testFieldOSMasterSeedDryRun()
  *   5) testFieldOSMasterSeedApply()  — writes ONLY when CONFIRM_APPLY === "APPLY"
  *   6) testFieldOSDisplayResolveSample() — read-only dual-read sample (no AuthZ bypass of FieldOS API)
+ *   7) testFieldOSRecordingWhisperBlobMeta() — read-only Drive blob metadata for Whisper upload diagnosis
  *
  * Confirmed AppSheet config (Phase 0):
  *   - tbl_job_sheets.project_id is Text (not Ref)
@@ -1392,6 +1393,143 @@ function testFieldOSDisplayResolveSample() {
           break;
         }
       }
+    }
+  } catch (err) {
+    report.error = String(err && err.message ? err.message : err);
+  }
+
+  Logger.log(JSON.stringify(report, null, 2));
+  return report;
+}
+
+/**
+ * MANUAL TEST 7 — Read-only Whisper upload metadata for a recording (default REC-819FC620).
+ * Logs Drive name/MIME, blob name/MIME, byte length, and normalised upload name/MIME.
+ * Does NOT call OpenAI. Does NOT log file bytes or secrets.
+ *
+ * NOTE: Do NOT call RecordingRepository.findById — Repositories.js constructs
+ * RecordingRepository with an options object, so BaseRepository.tableName becomes
+ * [object Object] and DB throws "Table '[object Object]' missing."
+ * Use DB.findById("tbl_recordings", "recording_id", id) instead (same pattern as FieldOSGateway).
+ *
+ * @param {string=} recordingIdOpt
+ */
+function fieldosDiagAssertTableName_(tableName, caller) {
+  if (typeof tableName !== "string" || !String(tableName).trim()) {
+    const got =
+      tableName !== null && typeof tableName === "object"
+        ? "[object Object]"
+        : typeof tableName;
+    throw new Error(
+      (caller || "fieldosDiag") +
+        ": table name must be a non-empty string, got " +
+        got
+    );
+  }
+  return String(tableName).trim();
+}
+
+/**
+ * Read-only load of one tbl_recordings row by recording_id.
+ * @param {string} recordingId
+ * @returns {object|null}
+ */
+function fieldosDiagFindRecordingById_(recordingId) {
+  const id = String(recordingId == null ? "" : recordingId).trim();
+  if (!id) throw new Error("fieldosDiagFindRecordingById_: recording_id is required.");
+
+  const table = fieldosDiagAssertTableName_(
+    "tbl_recordings",
+    "fieldosDiagFindRecordingById_"
+  );
+
+  if (typeof DB === "undefined" || typeof DB.findById !== "function") {
+    throw new Error("DB.findById is unavailable.");
+  }
+
+  // Signature: DB.findById(tableName, keyColumn, id) — all strings.
+  return DB.findById(table, "recording_id", id);
+}
+
+function testFieldOSRecordingWhisperBlobMeta(recordingIdOpt) {
+  const recordingId = String(
+    recordingIdOpt == null || recordingIdOpt === ""
+      ? "REC-819FC620"
+      : recordingIdOpt
+  ).trim();
+
+  const report = {
+    diagnostic: "testFieldOSRecordingWhisperBlobMeta",
+    read_only: true,
+    calls_openai: false,
+    recording_id: recordingId,
+    recording_drive_file_id_present: false,
+    recording_name: null,
+    stored_mime_fields: null,
+    drive_filename: null,
+    drive_mime_type: null,
+    raw_blob_name: null,
+    raw_blob_content_type: null,
+    raw_blob_byte_length: null,
+    proposed_normalised_filename: null,
+    proposed_normalised_content_type: null,
+    format_supported: null,
+    error: null
+  };
+
+  try {
+    const row = fieldosDiagFindRecordingById_(recordingId);
+    if (!row) {
+      report.error = "Recording not found.";
+      Logger.log(JSON.stringify(report, null, 2));
+      return report;
+    }
+
+    const driveId = String(row.recording_drive_file_id || "").trim();
+    report.recording_drive_file_id_present = !!driveId;
+    report.recording_name = String(row.recording_name || "");
+    report.stored_mime_fields = {
+      mime_type: row.mime_type != null ? String(row.mime_type) : null,
+      content_type: row.content_type != null ? String(row.content_type) : null,
+      recording_mime: row.recording_mime != null ? String(row.recording_mime) : null
+    };
+
+    if (!driveId) {
+      report.error = "recording_drive_file_id is blank.";
+      Logger.log(JSON.stringify(report, null, 2));
+      return report;
+    }
+
+    const file = DriveApp.getFileById(driveId);
+    report.drive_filename = String(file.getName() || "");
+    report.drive_mime_type = String(file.getMimeType() || "");
+
+    const blob = file.getBlob();
+    const rawBytes = blob.getBytes();
+    report.raw_blob_name = String(blob.getName() || "");
+    report.raw_blob_content_type = String(blob.getContentType() || "");
+    report.raw_blob_byte_length = rawBytes && rawBytes.length ? rawBytes.length : 0;
+
+    if (typeof fieldosVpPrepareWhisperUploadBlob_ === "function") {
+      try {
+        const normalised = fieldosVpPrepareWhisperUploadBlob_(blob, {
+          recording_id: recordingId,
+          recording_name: row.recording_name,
+          drive_file_name: file.getName()
+        });
+        report.proposed_normalised_filename = String(normalised.getName() || "");
+        report.proposed_normalised_content_type = String(
+          normalised.getContentType() || ""
+        );
+        report.format_supported = true;
+      } catch (normErr) {
+        report.format_supported = false;
+        report.error = String(normErr && normErr.message ? normErr.message : normErr);
+      }
+    } else {
+      report.format_supported = null;
+      report.error =
+        "fieldosVpPrepareWhisperUploadBlob_ unavailable — update VoiceProcessing.gs first";
     }
   } catch (err) {
     report.error = String(err && err.message ? err.message : err);

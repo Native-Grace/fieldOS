@@ -18,6 +18,7 @@ Live Web App URL / secrets remain in local `.env` only (never commit). Further A
 | `DOGET_MERGE_PROPOSAL.md` | Inventory + plan for conflicting Apps Script `doGet` recorder entry points. **Deferred:** Phase 2 FieldOS uses doPost only; do not merge `doGet` for Phase 2. |
 | `DoGetMerged.js` | Proposed sole `doGet` implementation for review only — **not** wired into production `Router.js` |
 | `FieldOSDisplayDiagnostics.js` | Read-only diagnostics + gated master seed apply + `testFieldOSDisplayResolveSample` (editor-only dual-read sample; not a doPost AuthZ bypass) |
+| `VoiceProcessing.js` | Queue facade `VoiceProcessing.executePipeline` + FieldOS recording bridge (mirrored from `apps-script/`) |
 
 ## Remaining manual steps in Google Apps Script (after approval)
 
