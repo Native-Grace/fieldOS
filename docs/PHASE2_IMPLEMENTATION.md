@@ -45,8 +45,8 @@
 |---|---|---|
 | `JOB_ASSIGNMENT_COLUMN` | `staff_id` | Staff assignment |
 | `JOB_DATE_COLUMN` | `date` | Job date |
-| `JOB_PROJECT_COLUMN` | `project_id` | Project key (API may surface as `project_name`) |
-| `JOB_CUSTOMER_COLUMN` | `customer_name` | **Not a job-sheet column** — API display field; resolve later via `project_id` → projects/customers |
+| `JOB_PROJECT_COLUMN` | `project_id` | **AppSheet Text** (not Ref). Stores legacy client/project label; name is misleading. FieldOS surfaces as `project_name`. |
+| `JOB_CUSTOMER_COLUMN` | `customer_name` | **Not a job-sheet column** — API display only until an approved master-data migration |
 
 Also confirmed on jobs / processing paths: `job_sheet_id`, `processing_status`, `processing_error`, `approval_status`, and related processing timestamps.
 
@@ -89,7 +89,7 @@ See **Phase 2 verification checklist** in `docs/PHASE2_SETUP.md`.
 
 | Item | Status |
 |---|---|
-| Customer display via `project_id` → `tbl_projects` → `tbl_customers` | **Partial** — repo lookup added with assumed columns (`project_name` / `customer_id` / `customer_name`); **live headers not yet confirmed**. Live `project_id` values may already be display strings (e.g. job `21759f5d`). Confirm headers before relying on customer enrichment. |
+| Customer display via `project_id` → `tbl_projects` → `tbl_customers` | **Dual-read ready (repo)** — `FieldOSDisplayLookup.js` resolves legacy Text labels via project_id → exact name → normalised name → fallback. Safe masters seeded (Babidge, Kat and James Dykes). **Needs Apps Script file update + Web App redeploy** to go live. Historical job rows unchanged. |
 | Apps Script `doGet` recorder conflict | **Deferred** — Phase 2 FieldOS only uses `doPost`. Proposal remains in `apps-script-proposed/DOGET_MERGE_PROPOSAL.md`. Do not merge until a dedicated Apps Script web-entry cleanup. |
 | AWS hosting / Odoo cutover | Future |
 | Local Python | Use **3.12** for backend venv (Docker already 3.12); see `fieldos/README.md` |
@@ -102,5 +102,5 @@ See **Phase 2 verification checklist** in `docs/PHASE2_SETUP.md`.
 | `tbl_projects` | `project_id` |
 | `tbl_customers` | `customer_id` |
 
-**Confirmed FK on jobs:** `tbl_job_sheets.project_id` (intended → `tbl_projects.project_id`).  
-**Unconfirmed until live header dump:** display columns on projects/customers and `tbl_projects.customer_id`.
+**Confirmed FK on jobs:** none today — `tbl_job_sheets.project_id` is a **legacy text label** (AppSheet Text), not a FK to `tbl_projects`.  
+**Masters:** safe labels seeded (`PROJ-/CUST-8BC1502B` Babidge, `PROJ-/CUST-6002C0A0` Kat and James Dykes). Dual-read lookup does not rewrite historical job text.

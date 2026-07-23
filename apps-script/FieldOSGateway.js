@@ -101,18 +101,28 @@ const FieldOSGateway = {
     }
 
     const projectKey = String(job[cols.project] || "").trim();
-    // Prefer project→customer lookup; fall back to raw sheet cells (customer usually absent on job sheet).
+    // Dual-read: project_id PK → exact/normalised project_name → raw fallback.
     let projectName = "";
     let customerName = "";
     try {
-      const maps = displayMaps || { projectById: {}, customerById: {} };
-      const resolved = fieldosResolveProjectCustomer_(
-        projectKey,
-        maps.projectById,
-        maps.customerById
-      );
+      const maps = displayMaps || {
+        projectById: {},
+        customerById: {},
+        projectByExactName: {},
+        projectByNormName: {}
+      };
+      const resolved = fieldosResolveProjectCustomer_(projectKey, maps);
       projectName = resolved.project_name || "";
       customerName = resolved.customer_name || "";
+      if (resolved.warning && typeof Logger !== "undefined" && Logger.log) {
+        Logger.log(
+          JSON.stringify({
+            fieldos_display_warning: resolved.warning,
+            job_sheet_id: String(job.job_sheet_id || ""),
+            match: resolved.match || null
+          })
+        );
+      }
     } catch (err) {
       projectName = projectKey;
       customerName = "";

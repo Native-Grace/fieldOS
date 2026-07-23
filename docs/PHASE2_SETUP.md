@@ -80,7 +80,7 @@ JOB_CUSTOMER_COLUMN=customer_name   # not on job sheet; display via project→cu
 |---|---|---|
 | Assignment | `staff_id` | Confirmed |
 | Date | `date` | Confirmed |
-| Project | `project_id` | Confirmed |
+| Project | `project_id` | **AppSheet Text (not Ref)** — legacy client/project label; not a FK |
 | Customer | `customer_name` | **Absent** from `tbl_job_sheets` — gateway resolves via `tbl_projects` / `tbl_customers` when rows match; otherwise empty |
 
 Map demo login to a real assignment value, e.g. local test account staff ID **`STAFF-9012C021`**:
@@ -202,6 +202,6 @@ Do not:
 
 | Item | Notes |
 |---|---|
-| Customer enrichment | Requires live confirmation of `tbl_projects` / `tbl_customers` headers (`project_name`, `customer_id`, `customer_name`). Lookup code is in `FieldOSDisplayLookup.js` and degrades safely when rows/columns are missing. |
+| Customer enrichment | Dual-read in `FieldOSDisplayLookup.js` (repo). Redeploy Apps Script to activate. Expected: `21759f5d` / `9d395bbd` get linked names; smith stays label-only. |
 | `doGet` conflict | **Deferred.** Phase 2 FieldOS uses **doPost only**. See `apps-script-proposed/DOGET_MERGE_PROPOSAL.md`. Do not merge `doGet` as part of Phase 2. |
 | Local Python | Backend Docker image is 3.12; recreate local venv with `python3.12` (see `fieldos/README.md`). |

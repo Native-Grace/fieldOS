@@ -53,17 +53,20 @@ FieldOS gateway actions include a `data` object (jobs list, job+recordings, or r
 
 ### Confirmed live `tbl_job_sheets` headers (FieldOS env defaults)
 
-| Role | Header |
-|---|---|
-| Assignment | `staff_id` |
-| Date | `date` |
-| Project | `project_id` |
+| Role | Header | Notes |
+|---|---|---|
+| Assignment | `staff_id` | Confirmed |
+| Date | `date` | Confirmed |
+| Project / client label | `project_id` | **AppSheet type: Text (not Ref).** UI shows as client; Sheet stores human-readable text (e.g. `"Kat and James Dykes"`). Column name is misleading — treat as `legacy_project_label`, not a FK. |
 
-`customer_name` is **not** on the live job sheet. FieldOSGateway resolves display names via `FieldOSDisplayLookup.js`:
+`customer_name` is **not** on the live job sheet. FieldOSGateway resolves display names via `FieldOSDisplayLookup.js` dual-read:
 
-`job.project_id` → `tbl_projects.project_id` → optional `customer_id` → `tbl_customers`
+1. exact `tbl_projects.project_id`
+2. exact `tbl_projects.project_name` (legacy AppSheet Text labels)
+3. normalised exact `project_name`
+4. fallback: raw label → `project_name`, `customer_name=""`
 
-Assumed display columns (confirm against live headers before relying on enrichment): `project_name` / `customer_name` (fallback `name`). Missing rows degrade without failing the job list. When `project_id` does not match a project row, the raw sheet value is kept as `project_name` (observed live for some jobs).
+When matched: `customer_id` → `tbl_customers.customer_name`. Ambiguous duplicate names fall back safely. Historical `tbl_job_sheets.project_id` text is not rewritten.
 
 **Smoke test staff ID:** `STAFF-9012C021` (local demo account mapping).
 
@@ -179,7 +182,7 @@ These are safe, documented editor/helpers — not production HTTP entry points b
 
 | Item | Notes |
 |---|---|
-| Live project/customer headers | Confirm `tbl_projects` / `tbl_customers` column names in the spreadsheet |
+| Live project/customer headers | AppSheet `project_id` is **Text**, not Ref. Phase 0: `testFieldOSProjectCustomerReconciliation`. Master seed = separate approval. |
 | `doGet` recorder conflict | **Deferred** — Phase 2 requires **doPost only**. Proposal: `apps-script-proposed/DOGET_MERGE_PROPOSAL.md`. Do not merge into production Router as part of Phase 2. |
 
 ---
