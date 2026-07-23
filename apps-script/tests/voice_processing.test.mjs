@@ -264,6 +264,58 @@ test("completed recordings remain idempotently skipped", () => {
   assert.equal(ctx.__openaiCalls.length, 0);
 });
 
+test("Invalid recordings are skipped without OpenAI calls", () => {
+  const ctx = loadContext();
+  ctx.VoiceProcessingService._getSpreadsheet = function () {
+    return {};
+  };
+  ctx.VoiceProcessingService._getRecords = function () {
+    return [
+      {
+        job_sheet_id: "21759f5d",
+        recording_id: "REC-819FC620",
+        recording_order: 1,
+        recording_drive_file_id: "fid-bad",
+        status: "Invalid",
+        _sheetRowIndex: 2,
+      },
+      {
+        job_sheet_id: "21759f5d",
+        recording_id: "REC-OK",
+        recording_order: 2,
+        recording_drive_file_id: "fid-ok",
+        status: "Saved",
+        _sheetRowIndex: 3,
+      },
+    ];
+  };
+  ctx.VoiceProcessingService._resolveRecordingDriveFile = function (recording) {
+    assert.notEqual(recording.recording_id, "REC-819FC620");
+    return {
+      getName: function () {
+        return "ok.webm";
+      },
+      getBlob: function () {
+        return makeBlob({
+          name: "ok.webm",
+          contentType: "audio/webm",
+          bytes: [1, 2, 3, 4],
+        });
+      },
+    };
+  };
+  const writebacks = [];
+  ctx.VoiceProcessingService._updateRowValue = function (ss, table, row, vals) {
+    writebacks.push({ row, vals });
+  };
+
+  const out = ctx.VoiceProcessingService.processJobSheetRecordings("21759f5d");
+  assert.equal(out, "whisper:ok.webm");
+  assert.equal(ctx.__openaiCalls.length, 1);
+  assert.equal(writebacks.length, 1);
+  assert.equal(writebacks[0].vals.status, "Processed");
+});
+
 test("per-recording failure identifies recording_id and rethrows", () => {
   const ctx = loadContext();
   ctx.VoiceProcessingService._getSpreadsheet = function () {

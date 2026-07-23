@@ -7,6 +7,8 @@
  * FieldOS recordings use transcript + recording_drive_file_id;
  * legacy AppSheet rows may use transcription + audio_file / file_path.
  *
+ * Recording loop skips status === "Invalid" and already Processed+transcript rows.
+ *
  * Structured GPT summary / job-line writeback is intentionally out of scope
  * (chatComplete helper exists in OpenAI.js but has no production field mapping).
  */
@@ -371,6 +373,10 @@ var VoiceProcessingService = {
 
     for (let i = 0; i < targetRecordings.length; i++) {
       const recording = targetRecordings[i];
+      var recordingStatus = String(recording.status || "").trim();
+      if (recordingStatus === "Invalid") {
+        continue;
+      }
       const recordingId = String(recording.recording_id || "");
 
       if (fieldosVpIsRecordingComplete_(recording)) {
