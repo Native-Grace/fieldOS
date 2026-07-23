@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     demo_staff_id: str = Field(default="STAFF-DEMO001", alias="DEMO_STAFF_ID")
     demo_staff_name: str = Field(default="Alex Technician", alias="DEMO_STAFF_NAME")
 
-    # Live tbl_job_sheets column mappings (customer_name not on job sheet — display via lookup TBD)
+    # Live tbl_job_sheets column mappings (customer_name is API display only; dual-read via projects/customers)
     job_assignment_column: str = Field(default="staff_id", alias="JOB_ASSIGNMENT_COLUMN")
     job_date_column: str = Field(default="date", alias="JOB_DATE_COLUMN")
     job_project_column: str = Field(default="project_id", alias="JOB_PROJECT_COLUMN")

@@ -66,7 +66,7 @@ FieldOS gateway actions include a `data` object (jobs list, job+recordings, or r
 3. normalised exact `project_name`
 4. fallback: raw label → `project_name`, `customer_name=""`
 
-When matched: `customer_id` → `tbl_customers.customer_name`. Ambiguous duplicate names fall back safely. Historical `tbl_job_sheets.project_id` text is not rewritten.
+When matched: `customer_id` → `tbl_customers.customer_name`. Ambiguous duplicate names fall back safely. Historical `tbl_job_sheets.project_id` text is not rewritten. Limitations: unseeded labels (e.g. `smith`) keep `project_name` = raw and `customer_name=""`; blank labels stay blank.
 
 **Smoke test staff ID:** `STAFF-9012C021` (local demo account mapping).
 

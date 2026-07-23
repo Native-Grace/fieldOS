@@ -73,7 +73,7 @@ Set FieldOS `.env` to match live `tbl_job_sheets`:
 JOB_ASSIGNMENT_COLUMN=staff_id
 JOB_DATE_COLUMN=date
 JOB_PROJECT_COLUMN=project_id
-JOB_CUSTOMER_COLUMN=customer_name   # not on job sheet; display via project→customer lookup TBD
+JOB_CUSTOMER_COLUMN=customer_name   # not on job sheet; dual-read display via FieldOSDisplayLookup
 ```
 
 | Mapping | Live header | Status |
@@ -81,7 +81,7 @@ JOB_CUSTOMER_COLUMN=customer_name   # not on job sheet; display via project→cu
 | Assignment | `staff_id` | Confirmed |
 | Date | `date` | Confirmed |
 | Project | `project_id` | **AppSheet Text (not Ref)** — legacy client/project label; not a FK |
-| Customer | `customer_name` | **Absent** from `tbl_job_sheets` — gateway resolves via `tbl_projects` / `tbl_customers` when rows match; otherwise empty |
+| Customer | `customer_name` | **Absent** from `tbl_job_sheets` — dual-read sets `customer_name` when a matching project→customer master exists; otherwise `""` |
 
 Map demo login to a real assignment value, e.g. local test account staff ID **`STAFF-9012C021`**:
 
@@ -202,6 +202,6 @@ Do not:
 
 | Item | Notes |
 |---|---|
-| Customer enrichment | Dual-read in `FieldOSDisplayLookup.js` (repo). Redeploy Apps Script to activate. Expected: `21759f5d` / `9d395bbd` get linked names; smith stays label-only. |
+| Customer enrichment | Dual-read deployed — legacy labels resolve to `project_name`; linked `customer_name` when masters match. Seeded: Babidge, Kat and James Dykes. Unseeded `smith` falls back to label-only; blanks stay blank. |
 | `doGet` conflict | **Deferred.** Phase 2 FieldOS uses **doPost only**. See `apps-script-proposed/DOGET_MERGE_PROPOSAL.md`. Do not merge `doGet` as part of Phase 2. |
 | Local Python | Backend Docker image is 3.12; recreate local venv with `python3.12` (see `fieldos/README.md`). |

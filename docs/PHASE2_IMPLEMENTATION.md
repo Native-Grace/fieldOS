@@ -46,7 +46,7 @@
 | `JOB_ASSIGNMENT_COLUMN` | `staff_id` | Staff assignment |
 | `JOB_DATE_COLUMN` | `date` | Job date |
 | `JOB_PROJECT_COLUMN` | `project_id` | **AppSheet Text** (not Ref). Stores legacy client/project label; name is misleading. FieldOS surfaces as `project_name`. |
-| `JOB_CUSTOMER_COLUMN` | `customer_name` | **Not a job-sheet column** — API display only until an approved master-data migration |
+| `JOB_CUSTOMER_COLUMN` | `customer_name` | **Not a job-sheet column** — API display via dual-read (`FieldOSDisplayLookup`); blank when no master match |
 
 Also confirmed on jobs / processing paths: `job_sheet_id`, `processing_status`, `processing_error`, `approval_status`, and related processing timestamps.
 
@@ -89,7 +89,7 @@ See **Phase 2 verification checklist** in `docs/PHASE2_SETUP.md`.
 
 | Item | Status |
 |---|---|
-| Customer display via `project_id` → `tbl_projects` → `tbl_customers` | **Dual-read ready (repo)** — `FieldOSDisplayLookup.js` resolves legacy Text labels via project_id → exact name → normalised name → fallback. Safe masters seeded (Babidge, Kat and James Dykes). **Needs Apps Script file update + Web App redeploy** to go live. Historical job rows unchanged. |
+| Customer display via `project_id` → `tbl_projects` → `tbl_customers` | **Deployed / verified** — dual-read resolves legacy Text labels; masters seeded (Babidge, Kat and James Dykes; batch `SEED-APPLY-20260723-221344`). Job `21759f5d` live-verified. `smith` unseeded (manual review). Historical job rows unchanged. |
 | Apps Script `doGet` recorder conflict | **Deferred** — Phase 2 FieldOS only uses `doPost`. Proposal remains in `apps-script-proposed/DOGET_MERGE_PROPOSAL.md`. Do not merge until a dedicated Apps Script web-entry cleanup. |
 | AWS hosting / Odoo cutover | Future |
 | Local Python | Use **3.12** for backend venv (Docker already 3.12); see `fieldos/README.md` |

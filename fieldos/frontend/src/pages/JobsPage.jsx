@@ -61,7 +61,7 @@ export default function JobsPage() {
 
       {assumptions.length > 0 && (
         <div className="warn-box">
-          <strong>Phase 1 assumptions</strong>
+          <strong>FieldOS notes</strong>
           <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
             {assumptions.slice(0, 2).map((a) => (
               <li key={a}>{a}</li>

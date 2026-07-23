@@ -13,8 +13,8 @@ from app.services.apps_script import AppsScriptClient, AppsScriptError
 from app.services.drive_upload import delete_drive_file, upload_recording_to_drive
 
 APPS_SCRIPT_ASSUMPTIONS = [
-    "DATA_MODE=apps_script reads/writes via proposed Apps Script actions (see apps-script-proposed/).",
-    "Assignment/date/project columns map to live tbl_job_sheets: staff_id, date, project_id. customer_name is not on the job sheet (lookup TBD).",
+    "DATA_MODE=apps_script reads/writes via Apps Script gateway actions (list/detail/register/process).",
+    "tbl_job_sheets.project_id stores legacy text labels; FieldOS resolves project_name (and customer_name when a matching master exists). Unmatched labels fall back to project_name with blank customer_name.",
     "Audio uploads go to Drive from FastAPI, then register_recording; large base64 is never posted to Apps Script.",
     "process_voice_dictation is the confirmed production enqueue action.",
 ]

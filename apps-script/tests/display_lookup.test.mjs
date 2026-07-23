@@ -170,3 +170,40 @@ test("PK match takes precedence over display match", () => {
   assert.equal(out.project_name, "Other");
   assert.equal(out.customer_name, "FromPk");
 });
+
+// Load diagnostics for editor-only sample helper (depends on resolve/maps above).
+const diagSrc = fs.readFileSync(
+  path.join(__dirname, "..", "FieldOSDisplayDiagnostics.js"),
+  "utf8"
+);
+vm.runInContext(diagSrc, context);
+const buildSample = context.fieldosDiagBuildDisplayResolveSampleRows_;
+
+test("editor-only display resolve sample reports sanitised fields only", () => {
+  const maps = buildMaps(liveProjects, liveCustomers);
+  const rows = buildSample(
+    [
+      { job_sheet_id: "21759f5d", project_id: "Kat and James Dykes" },
+      { job_sheet_id: "9d395bbd", project_id: "Babidge" },
+      { job_sheet_id: "e17cc590", project_id: "smith" },
+      { job_sheet_id: "blank1", project_id: "" },
+    ],
+    maps
+  );
+  assert.equal(rows.length, 4);
+  assert.deepEqual(Object.keys(rows[0]).sort(), [
+    "customer_name",
+    "job_sheet_id",
+    "match",
+    "project_name",
+    "raw_project_id",
+  ]);
+  assert.equal(rows[0].project_name, "Kat and James Dykes");
+  assert.equal(rows[0].customer_name, "Kat and James Dykes");
+  assert.equal(rows[1].project_name, "Babidge");
+  assert.equal(rows[1].customer_name, "Babidge");
+  assert.equal(rows[2].project_name, "smith");
+  assert.equal(rows[2].customer_name, "");
+  assert.equal(rows[3].project_name, "");
+  assert.equal(rows[3].customer_name, "");
+});
