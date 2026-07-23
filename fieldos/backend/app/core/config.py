@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     jobs_default_days: int = Field(default=7, alias="JOBS_DEFAULT_DAYS")
 
     max_upload_mb: int = Field(default=25, alias="MAX_UPLOAD_MB")
+    # Reject header-only / empty WebM stubs (e.g. 18-byte EBML shells) before Drive write.
+    min_recording_upload_bytes: int = Field(default=1024, alias="MIN_RECORDING_UPLOAD_BYTES")
     allowed_audio_mimes: str = Field(
         default="audio/webm,audio/mp4,audio/mpeg,audio/ogg,audio/wav,video/webm",
         alias="ALLOWED_AUDIO_MIMES",

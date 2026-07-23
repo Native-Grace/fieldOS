@@ -347,7 +347,7 @@ def test_api_missing_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             resp = c.post(
                 "/api/v1/jobs/21759f5d/recordings",
                 headers={"Authorization": f"Bearer {token}"},
-                files={"file": ("note.webm", io.BytesIO(b"abc123"), "audio/webm")},
+                files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                 data={"duration_seconds": "1", "trigger_processing": "false"},
             )
         assert resp.status_code == 503
@@ -380,7 +380,7 @@ def test_api_missing_folder_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             resp = c.post(
                 "/api/v1/jobs/21759f5d/recordings",
                 headers={"Authorization": f"Bearer {token}"},
-                files={"file": ("note.webm", io.BytesIO(b"abc123"), "audio/webm")},
+                files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                 data={"duration_seconds": "1", "trigger_processing": "false"},
             )
         assert resp.status_code == 503
@@ -415,7 +415,7 @@ def test_api_successful_drive_then_register(apps_script_drive_env: TestClient) -
             resp = apps_script_drive_env.post(
                 "/api/v1/jobs/21759f5d/recordings",
                 headers={"Authorization": f"Bearer {token}"},
-                files={"file": ("note.webm", io.BytesIO(b"abc123"), "audio/webm")},
+                files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                 data={"duration_seconds": "1.5", "trigger_processing": "false"},
             )
     assert resp.status_code == 200, resp.text
@@ -426,7 +426,7 @@ def test_api_successful_drive_then_register(apps_script_drive_env: TestClient) -
     assert "test-webhook-secret" not in resp.text
     upload_mock.assert_called_once()
     call_kwargs = upload_mock.call_args.kwargs
-    assert call_kwargs["data"] == b"abc123"
+    assert call_kwargs["data"] == b"x" * 2048
     assert call_kwargs["mime_type"] == "audio/webm"
 
 
@@ -448,7 +448,7 @@ def test_api_drive_permission_failure(apps_script_drive_env: TestClient) -> None
             resp = apps_script_drive_env.post(
                 "/api/v1/jobs/21759f5d/recordings",
                 headers={"Authorization": f"Bearer {token}"},
-                files={"file": ("note.webm", io.BytesIO(b"abc123"), "audio/webm")},
+                files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                 data={"duration_seconds": "1", "trigger_processing": "false"},
             )
     assert resp.status_code == 503
@@ -473,7 +473,7 @@ def test_api_storage_quota_exceeded(apps_script_drive_env: TestClient) -> None:
             resp = apps_script_drive_env.post(
                 "/api/v1/jobs/21759f5d/recordings",
                 headers={"Authorization": f"Bearer {token}"},
-                files={"file": ("note.webm", io.BytesIO(b"abc123"), "audio/webm")},
+                files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                 data={"duration_seconds": "1", "trigger_processing": "false"},
             )
     assert resp.status_code == 503
@@ -502,7 +502,7 @@ def test_api_register_recording_failure_deletes_orphan(apps_script_drive_env: Te
                 resp = apps_script_drive_env.post(
                     "/api/v1/jobs/21759f5d/recordings",
                     headers={"Authorization": f"Bearer {token}"},
-                    files={"file": ("note.webm", io.BytesIO(b"abc123"), "audio/webm")},
+                    files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                     data={"duration_seconds": "1", "trigger_processing": "false"},
                 )
     assert resp.status_code == 403
@@ -550,7 +550,7 @@ def test_api_size_rejection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
             resp = c.post(
                 "/api/v1/jobs/21759f5d/recordings",
                 headers={"Authorization": f"Bearer {token}"},
-                files={"file": ("note.webm", io.BytesIO(b"12345"), "audio/webm")},
+                files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                 data={"duration_seconds": "1", "trigger_processing": "false"},
             )
         assert resp.status_code == 400

@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { uploadRecording } from "../api";
+import {
+  NO_AUDIO_MESSAGE,
+  appendRecordingChunk,
+  buildRecordingDiagnostics,
+  stopRecorderAndBuildBlob,
+  validateRecordingForUpload,
+} from "../recordingMedia";
 
 const DRAFT_KEY_PREFIX = "fieldos_recording_draft_";
 
@@ -39,6 +46,11 @@ async function dataUrlToBlob(dataUrl) {
   return res.blob();
 }
 
+function logRecordingDiag(label, diagnostics) {
+  // No audio bytes / no data URLs — metadata only.
+  console.info(`[FieldOS recorder] ${label}`, diagnostics);
+}
+
 export default function RecorderPage() {
   const { jobSheetId } = useParams();
   const mimeType = useMemo(() => pickMimeType(), []);
@@ -49,6 +61,7 @@ export default function RecorderPage() {
   const timerRef = useRef(null);
   const startedAtRef = useRef(0);
   const accumulatedMsRef = useRef(0);
+  const stoppingRef = useRef(false);
 
   const [phase, setPhase] = useState("idle"); // idle | recording | paused | ready | uploading | uploaded | failed
   const [seconds, setSeconds] = useState(0);
@@ -58,6 +71,7 @@ export default function RecorderPage() {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
   const [uploadResult, setUploadResult] = useState(null);
+  const [lastDiag, setLastDiag] = useState(null);
 
   // Restore local draft if previous upload failed / page reloaded
   useEffect(() => {
@@ -67,6 +81,15 @@ export default function RecorderPage() {
       try {
         const draft = JSON.parse(raw);
         const restored = await dataUrlToBlob(draft.dataUrl);
+        const check = validateRecordingForUpload({
+          blob: restored,
+          durationSeconds: draft.durationSeconds || 0,
+          chunkCount: 1,
+        });
+        if (!check.ok) {
+          localStorage.removeItem(DRAFT_KEY_PREFIX + jobSheetId);
+          return;
+        }
         setBlob(restored);
         setSeconds(draft.durationSeconds || 0);
         setObjectUrl(URL.createObjectURL(restored));
@@ -94,6 +117,22 @@ export default function RecorderPage() {
     }
   }
 
+  function audioTrackMeta(stream) {
+    const track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+    if (!track) {
+      return {
+        audioTrackReadyState: "",
+        audioTrackMuted: false,
+        audioTrackEnabled: false,
+      };
+    }
+    return {
+      audioTrackReadyState: track.readyState || "",
+      audioTrackMuted: !!track.muted,
+      audioTrackEnabled: track.enabled !== false,
+    };
+  }
+
   function startTimer() {
     startedAtRef.current = Date.now();
     timerRef.current = setInterval(() => {
@@ -110,6 +149,8 @@ export default function RecorderPage() {
   async function startRecording() {
     setError("");
     setUploadResult(null);
+    setLastDiag(null);
+    stoppingRef.current = false;
     if (!window.MediaRecorder) {
       setError("MediaRecorder is not supported in this browser.");
       return;
@@ -120,33 +161,56 @@ export default function RecorderPage() {
       chunksRef.current = [];
       accumulatedMsRef.current = 0;
       setSeconds(0);
+      setBlob(null);
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        setObjectUrl("");
+      }
+
+      const trackInfo = audioTrackMeta(stream);
+      logRecordingDiag("mic-ready", {
+        selectedMimeType: mimeType,
+        ...trackInfo,
+        phase: "starting",
+      });
 
       const options = mimeType ? { mimeType } : undefined;
       const recorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) chunksRef.current.push(event.data);
+        appendRecordingChunk(chunksRef.current, event.data);
+        logRecordingDiag("dataavailable", {
+          selectedMimeType: mimeType,
+          recorderMimeType: recorder.mimeType || "",
+          chunkCount: chunksRef.current.length,
+          chunkSizes: chunksRef.current.map((c) => c.size),
+          mediaRecorderState: recorder.state,
+          ...audioTrackMeta(streamRef.current),
+          phase: "recording",
+        });
       };
 
-      recorder.onstop = () => {
-        const type = recorder.mimeType || mimeType || "audio/webm";
-        const recorded = new Blob(chunksRef.current, { type });
-        setBlob(recorded);
-        const url = URL.createObjectURL(recorded);
-        setObjectUrl((prev) => {
-          if (prev) URL.revokeObjectURL(prev);
-          return url;
-        });
-        setPhase("ready");
-        setStatus("Recording ready. Play back, delete, or upload.");
+      recorder.onerror = (event) => {
+        const msg = (event && event.error && event.error.message) || "MediaRecorder error";
+        setError(msg);
+        setStatus("Recording failed.");
+        setPhase("idle");
         stopTracks();
       };
 
+      // timeslice ensures periodic chunks; final flush still happens on stop().
       recorder.start(1000);
       setPhase("recording");
-      setStatus("Recording…");
+      setStatus("Recording… Speak clearly for at least one second.");
       startTimer();
+      logRecordingDiag("started", {
+        selectedMimeType: mimeType,
+        recorderMimeType: recorder.mimeType || "",
+        mediaRecorderState: recorder.state,
+        ...trackInfo,
+        phase: "recording",
+      });
     } catch (err) {
       setError(`Microphone error: ${err.message}`);
       setStatus("Could not access microphone.");
@@ -161,6 +225,14 @@ export default function RecorderPage() {
     pauseTimer();
     setPhase("paused");
     setStatus("Paused.");
+    logRecordingDiag("paused", {
+      selectedMimeType: mimeType,
+      recorderMimeType: recorder.mimeType || "",
+      mediaRecorderState: recorder.state,
+      chunkCount: chunksRef.current.length,
+      chunkSizes: chunksRef.current.map((c) => c.size),
+      phase: "paused",
+    });
   }
 
   function resumeRecording() {
@@ -172,12 +244,77 @@ export default function RecorderPage() {
     setStatus("Recording…");
   }
 
-  function stopRecording() {
+  async function stopRecording() {
     const recorder = mediaRecorderRef.current;
     if (!recorder || (recorder.state !== "recording" && recorder.state !== "paused")) return;
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+
     if (recorder.state === "recording") pauseTimer();
     if (timerRef.current) clearInterval(timerRef.current);
-    recorder.stop();
+
+    const durationSeconds =
+      (accumulatedMsRef.current +
+        (recorder.state === "recording" ? 0 : 0)) /
+        1000 || seconds;
+
+    try {
+      const { blob: recorded, diagnostics } = await stopRecorderAndBuildBlob(recorder, {
+        chunks: chunksRef.current,
+        mimeType,
+      });
+
+      const finalDuration =
+        accumulatedMsRef.current > 0
+          ? accumulatedMsRef.current / 1000
+          : Math.max(seconds, durationSeconds);
+
+      const fullDiag = buildRecordingDiagnostics({
+        ...diagnostics,
+        durationSeconds: finalDuration,
+        ...audioTrackMeta(streamRef.current),
+        phase: "validating",
+      });
+      setLastDiag(fullDiag);
+      logRecordingDiag("stop-complete", fullDiag);
+
+      // Mic off only after Blob is built from chunks.
+      stopTracks();
+
+      const check = validateRecordingForUpload({
+        blob: recorded,
+        durationSeconds: finalDuration,
+        chunkCount: chunksRef.current.length,
+      });
+      if (!check.ok) {
+        setBlob(null);
+        setPhase("idle");
+        setError(NO_AUDIO_MESSAGE);
+        setStatus("Recording discarded — no usable audio was captured.");
+        chunksRef.current = [];
+        setSeconds(0);
+        accumulatedMsRef.current = 0;
+        return;
+      }
+
+      setBlob(recorded);
+      setSeconds(finalDuration);
+      const url = URL.createObjectURL(recorded);
+      setObjectUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+      setPhase("ready");
+      setStatus("Recording ready. Play back, delete, or upload.");
+    } catch (err) {
+      setError(err.message || "Failed to finalise recording.");
+      setPhase("idle");
+      stopTracks();
+      chunksRef.current = [];
+    } finally {
+      stoppingRef.current = false;
+      mediaRecorderRef.current = null;
+    }
   }
 
   function deleteRecording() {
@@ -192,6 +329,7 @@ export default function RecorderPage() {
     setProgress(0);
     setUploadResult(null);
     setError("");
+    setLastDiag(null);
     setStatus("Deleted. Tap Record to start again.");
   }
 
@@ -209,8 +347,14 @@ export default function RecorderPage() {
   }
 
   async function doUpload() {
-    if (!blob || blob.size === 0 || seconds < 0.3) {
-      setError("Empty recording — nothing to upload.");
+    const check = validateRecordingForUpload({
+      blob,
+      durationSeconds: seconds,
+      chunkCount: chunksRef.current.length || (blob ? 1 : 0),
+    });
+    if (!check.ok) {
+      setError(NO_AUDIO_MESSAGE);
+      setStatus("Upload blocked — recording has no usable audio.");
       return;
     }
     setError("");
@@ -323,6 +467,7 @@ export default function RecorderPage() {
 
         <p className="small muted">
           Format: {mimeType || "browser default"}. Mic permission is only requested when you tap Record.
+          {lastDiag ? ` Last capture: ${lastDiag.finalBlobSize} bytes, ${lastDiag.chunkCount} chunks.` : ""}
         </p>
       </div>
     </div>

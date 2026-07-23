@@ -74,6 +74,15 @@ class JobService:
             )
         if not data:
             raise HTTPException(status_code=400, detail="Empty upload rejected")
+        min_bytes = int(getattr(self.settings, "min_recording_upload_bytes", 1024) or 1024)
+        if len(data) < min_bytes:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Recording contains no audio (file too small). "
+                    f"Received {len(data)} bytes; minimum is {min_bytes} bytes. Please record again."
+                ),
+            )
         if len(data) > self.settings.max_upload_bytes:
             raise HTTPException(
                 status_code=400,

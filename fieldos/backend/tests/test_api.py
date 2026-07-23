@@ -156,7 +156,7 @@ def test_upload_recording_and_process(client: TestClient) -> None:
     jobs = client.get("/api/v1/jobs/mine", headers={"Authorization": f"Bearer {token}"}).json()["items"]
     job_id = jobs[0]["job_sheet_id"]
 
-    audio = io.BytesIO(b"fake-webm-bytes-not-empty")
+    audio = io.BytesIO(b"x" * 2048)
     resp = client.post(
         f"/api/v1/jobs/{job_id}/recordings",
         headers={"Authorization": f"Bearer {token}"},
@@ -185,6 +185,21 @@ def test_reject_empty_upload(client: TestClient) -> None:
         data={"duration_seconds": "0"},
     )
     assert resp.status_code == 400
+
+
+def test_reject_tiny_webm_stub_upload(client: TestClient) -> None:
+    """18-byte EBML shells must not reach Drive / tbl_recordings."""
+    token = _login(client)
+    jobs = client.get("/api/v1/jobs/mine", headers={"Authorization": f"Bearer {token}"}).json()["items"]
+    job_id = jobs[0]["job_sheet_id"]
+    resp = client.post(
+        f"/api/v1/jobs/{job_id}/recordings",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("tiny.webm", io.BytesIO(b"x" * 18), "audio/webm")},
+        data={"duration_seconds": "1"},
+    )
+    assert resp.status_code == 422
+    assert "no audio" in str(resp.json()["detail"]).lower() or "too small" in str(resp.json()["detail"]).lower()
 
 
 def test_reject_bad_mime(client: TestClient) -> None:
@@ -223,7 +238,7 @@ def test_reject_oversized_upload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         resp = c.post(
             f"/api/v1/jobs/{job_id}/recordings",
             headers={"Authorization": f"Bearer {token}"},
-            files={"file": ("note.webm", io.BytesIO(b"12345"), "audio/webm")},
+            files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
             data={"duration_seconds": "1"},
         )
         assert resp.status_code == 400
@@ -602,7 +617,7 @@ def test_apps_script_recording_requires_drive(tmp_path: Path, monkeypatch: pytes
             resp = c.post(
                 "/api/v1/jobs/JS-REAL001/recordings",
                 headers={"Authorization": f"Bearer {token}"},
-                files={"file": ("note.webm", io.BytesIO(b"abc123"), "audio/webm")},
+                files={"file": ("note.webm", io.BytesIO(b"x" * 2048), "audio/webm")},
                 data={"duration_seconds": "1", "trigger_processing": "false"},
             )
         assert resp.status_code == 503
