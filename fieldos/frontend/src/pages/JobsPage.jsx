@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, clearSession, getStaff } from "../api";
+import {
+  DEFAULT_JOBS_DAYS,
+  JOBS_RANGE_OPTIONS,
+  emptyJobsMessage,
+  fetchMyJobs,
+  loadJobsDays,
+  normalizeJobsDays,
+  saveJobsDays,
+} from "../jobsRange";
 
 function statusClass(status) {
   const s = (status || "").toLowerCase();
@@ -10,10 +19,15 @@ function statusClass(status) {
   return "badge";
 }
 
+function initialDays() {
+  if (typeof localStorage === "undefined") return DEFAULT_JOBS_DAYS;
+  return loadJobsDays(localStorage);
+}
+
 export default function JobsPage() {
   const staff = getStaff();
   const [items, setItems] = useState([]);
-  const [days, setDays] = useState(7);
+  const [days, setDays] = useState(initialDays);
   const [error, setError] = useState("");
   const [assumptions, setAssumptions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,13 +38,15 @@ export default function JobsPage() {
       setLoading(true);
       setError("");
       try {
-        const data = await api("/jobs/mine?days=7");
+        const data = await fetchMyJobs({ days, api });
         if (cancelled) return;
-        setItems(data.items || []);
-        setDays(data.days);
-        setAssumptions(data.assumptions || []);
+        setItems(data.items);
+        setAssumptions(data.assumptions);
       } catch (err) {
-        if (!cancelled) setError(err.message);
+        if (!cancelled) {
+          setItems([]);
+          setError(err.message || "Failed to load jobs");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -38,7 +54,13 @@ export default function JobsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [days]);
+
+  function onRangeChange(event) {
+    const next = normalizeJobsDays(event.target.value);
+    setDays(next);
+    if (typeof localStorage !== "undefined") saveJobsDays(localStorage, next);
+  }
 
   function logout() {
     clearSession();
@@ -54,9 +76,26 @@ export default function JobsPage() {
             {staff?.staff_name} · last {days} days
           </p>
         </div>
-        <button className="btn btn-ghost" style={{ width: "auto" }} onClick={logout} type="button">
-          Log out
-        </button>
+        <div className="topbar-actions">
+          <label className="range-select">
+            <span className="visually-hidden">Date range</span>
+            <select
+              value={days}
+              onChange={onRangeChange}
+              disabled={loading}
+              aria-label="Job date range"
+            >
+              {JOBS_RANGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="btn btn-ghost" style={{ width: "auto" }} onClick={logout} type="button">
+            Log out
+          </button>
+        </div>
       </div>
 
       {assumptions.length > 0 && (
@@ -73,23 +112,24 @@ export default function JobsPage() {
       {error && <div className="error-box">{error}</div>}
       {loading && <p className="muted">Loading jobs…</p>}
       {!loading && !error && items.length === 0 && (
-        <div className="card">No jobs in the last {days} days.</div>
+        <div className="card">{emptyJobsMessage(days)}</div>
       )}
 
-      {items.map((job) => (
-        <Link key={job.job_sheet_id} className="job-row" to={`/jobs/${job.job_sheet_id}`}>
-          <div className="job-id">{job.job_sheet_id}</div>
-          <div className="job-title">
-            {job.customer_name || "Customer"} · {job.project_name || "Project"}
-          </div>
-          <div className="meta">
-            <span>{job.job_date || "—"}</span>
-            <span className={statusClass(job.processing_status)}>
-              {job.processing_status || "Draft"}
-            </span>
-          </div>
-        </Link>
-      ))}
+      {!loading &&
+        items.map((job) => (
+          <Link key={job.job_sheet_id} className="job-row" to={`/jobs/${job.job_sheet_id}`}>
+            <div className="job-id">{job.job_sheet_id}</div>
+            <div className="job-title">
+              {job.customer_name || "Customer"} · {job.project_name || "Project"}
+            </div>
+            <div className="meta">
+              <span>{job.job_date || "—"}</span>
+              <span className={statusClass(job.processing_status)}>
+                {job.processing_status || "Draft"}
+              </span>
+            </div>
+          </Link>
+        ))}
     </div>
   );
 }
