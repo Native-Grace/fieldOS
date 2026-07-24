@@ -93,7 +93,15 @@ class MockStore:
         return rows
 
     def next_recording_order(self, job_sheet_id: str) -> int:
-        return len(self.list_recordings(job_sheet_id)) + 1
+        max_order = 0
+        for row in self.list_recordings(job_sheet_id):
+            try:
+                n = int(row.get("recording_order") or 0)
+            except (TypeError, ValueError):
+                continue
+            if n > max_order:
+                max_order = n
+        return max_order + 1
 
     def create_recording(self, row: dict[str, Any]) -> dict[str, Any]:
         rows = self._read(self.recordings_path)

@@ -86,6 +86,28 @@ function fieldosJsonResponse(status, action, message, recordId, data) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+/**
+ * Next recording_order for a job: max numeric order among existing rows + 1.
+ * Non-numeric / missing orders are ignored for the max (treated as absent).
+ * Do NOT use existing.length + 1 — deletions create gaps and collide with max.
+ *
+ * @param {Array<object>} rows
+ * @returns {number}
+ */
+function fieldosNextRecordingOrderFromRows_(rows) {
+  let maxOrder = 0;
+  const list = rows || [];
+  for (let i = 0; i < list.length; i++) {
+    const raw = list[i] && list[i].recording_order;
+    if (raw == null || raw === "") continue;
+    const n = Number(raw);
+    if (!isFinite(n) || isNaN(n)) continue;
+    const floored = Math.floor(n);
+    if (floored > maxOrder) maxOrder = floored;
+  }
+  return maxOrder + 1;
+}
+
 var FieldOSGateway = {
 
   _col: function(payload, key, fallback) {
@@ -351,32 +373,48 @@ var FieldOSGateway = {
     const job = JobSheetRepository.findById(jobSheetId);
     this._assertAssigned(job, staffId, assignmentColumn);
 
-    let existing = [];
-    try {
-      existing = RecordingRepository.find({ job_sheet_id: jobSheetId }) || [];
-    } catch (err) {
-      existing = DB.findWhere("tbl_recordings", { job_sheet_id: jobSheetId }) || [];
-    }
-    const recordingOrder = existing.length + 1;
-    const recordingId = payload.recording_id || ("REC-" + Utilities.getUuid().split("-")[0].toUpperCase());
-    const recordingName = payload.recording_name || (jobSheetId + "-REC-" + recordingOrder + ".webm");
+    // Client-supplied recording_order is ignored — Apps Script is authority (max+1 under lock).
+    const clientOrderIgnored =
+      payload.recording_order != null && String(payload.recording_order).trim() !== "";
 
-    const row = {
-      recording_id: recordingId,
-      job_sheet_id: jobSheetId,
-      recording_file_url: String(payload.recording_file_url),
-      recording_drive_file_id: String(payload.recording_drive_file_id),
-      recording_name: recordingName,
-      recording_order: recordingOrder,
-      duration_seconds: Number(payload.duration_seconds || 0),
-      transcript: "",
-      status: "Saved",
-      created_by: String(payload.created_by || ""),
-      created_at: new Date()
-    };
+    const lockTimeoutMs = 30000;
+    const registered = Utils.withLock(
+      "REGISTER_RECORDING_" + String(jobSheetId),
+      lockTimeoutMs,
+      function () {
+        let existing = [];
+        try {
+          existing = RecordingRepository.find({ job_sheet_id: jobSheetId }) || [];
+        } catch (err) {
+          existing = DB.findWhere("tbl_recordings", { job_sheet_id: jobSheetId }) || [];
+        }
+        // Re-read under lock so concurrent/stale clients cannot collide on length+1.
+        const recordingOrder = fieldosNextRecordingOrderFromRows_(existing);
+        const recordingId =
+          payload.recording_id ||
+          ("REC-" + Utilities.getUuid().split("-")[0].toUpperCase());
+        const recordingName =
+          payload.recording_name || jobSheetId + "-REC-" + recordingOrder + ".webm";
 
-    // Prefer DB.insertRecord to avoid broken RecordingRepository constructor in export
-    DB.insertRecord("tbl_recordings", row);
+        const row = {
+          recording_id: recordingId,
+          job_sheet_id: jobSheetId,
+          recording_file_url: String(payload.recording_file_url),
+          recording_drive_file_id: String(payload.recording_drive_file_id),
+          recording_name: recordingName,
+          recording_order: recordingOrder,
+          duration_seconds: Number(payload.duration_seconds || 0),
+          transcript: "",
+          status: "Saved",
+          created_by: String(payload.created_by || ""),
+          created_at: new Date()
+        };
+
+        // alreadyLocked: ScriptLock is not re-entrant; outer lock covers order+insert.
+        DB.insertRecord("tbl_recordings", row, { alreadyLocked: true });
+        return row;
+      }
+    );
 
     SyncRepository.create({
       record_id: jobSheetId,
@@ -385,10 +423,14 @@ var FieldOSGateway = {
       request_payload: JSON.stringify({
         action: "register_recording",
         job_sheet_id: jobSheetId,
-        recording_drive_file_id: row.recording_drive_file_id,
-        duration_seconds: row.duration_seconds
+        recording_drive_file_id: registered.recording_drive_file_id,
+        duration_seconds: registered.duration_seconds,
+        client_recording_order_ignored: clientOrderIgnored
       }),
-      response_payload: JSON.stringify({ recording_id: recordingId, recording_order: recordingOrder }),
+      response_payload: JSON.stringify({
+        recording_id: registered.recording_id,
+        recording_order: registered.recording_order
+      }),
       timestamp: new Date()
     });
 
@@ -397,10 +439,10 @@ var FieldOSGateway = {
       message: "Recording registered.",
       job_sheet_id: jobSheetId,
       data: {
-        recording_id: recordingId,
-        recording_file_url: row.recording_file_url,
-        recording_drive_file_id: row.recording_drive_file_id,
-        recording_order: recordingOrder,
+        recording_id: registered.recording_id,
+        recording_file_url: registered.recording_file_url,
+        recording_drive_file_id: registered.recording_drive_file_id,
+        recording_order: registered.recording_order,
         status: "Saved"
       }
     };

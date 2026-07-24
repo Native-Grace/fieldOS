@@ -9,6 +9,8 @@
  *   5) testFieldOSMasterSeedApply()  — writes ONLY when CONFIRM_APPLY === "APPLY"
  *   6) testFieldOSDisplayResolveSample() — read-only dual-read sample (no AuthZ bypass of FieldOS API)
  *   7) testFieldOSRecordingWhisperBlobMeta() — read-only Drive blob metadata for Whisper upload diagnosis
+ *   8) testFieldOSStructuredSummaryDryRun() — read-only GPT structured summary (no Sheet writes)
+ *   9) testFieldOSStructuredWritebackVerification() — read-only job AI field verification (no full transcript)
  *
  * Confirmed AppSheet config (Phase 0):
  *   - tbl_job_sheets.project_id is Text (not Ref)
@@ -1531,6 +1533,184 @@ function testFieldOSRecordingWhisperBlobMeta(recordingIdOpt) {
       report.error =
         "fieldosVpPrepareWhisperUploadBlob_ unavailable — update VoiceProcessing.gs first";
     }
+  } catch (err) {
+    report.error = String(err && err.message ? err.message : err);
+  }
+
+  Logger.log(JSON.stringify(report, null, 2));
+  return report;
+}
+
+/**
+ * MANUAL TEST 8 — READ-ONLY structured GPT summary dry-run (default job 21759f5d).
+ * Loads existing Processed transcripts, calls OpenAI.chatComplete, logs parsed JSON only.
+ * Does NOT write tbl_job_sheets / tbl_recordings. Does NOT enqueue Queue.
+ *
+ * @param {string=} jobSheetIdOpt
+ */
+function testFieldOSStructuredSummaryDryRun(jobSheetIdOpt) {
+  const jobSheetId = String(
+    jobSheetIdOpt == null || jobSheetIdOpt === ""
+      ? FIELDOS_DIAG_JOB_SHEET_ID_
+      : jobSheetIdOpt
+  ).trim();
+
+  const report = {
+    diagnostic: "testFieldOSStructuredSummaryDryRun",
+    read_only: true,
+    writes_sheets: false,
+    job_sheet_id: jobSheetId,
+    recording_count: 0,
+    transcript_character_count: 0,
+    model: typeof FIELDOS_VP_SUMMARY_MODEL_ !== "undefined" ? FIELDOS_VP_SUMMARY_MODEL_ : "gpt-4o",
+    parse_success: false,
+    structured: null,
+    error: null
+  };
+
+  try {
+    if (typeof fieldosVpAggregateEligibleTranscripts_ !== "function") {
+      throw new Error("VoiceProcessing aggregate helpers unavailable — update VoiceProcessing.gs first.");
+    }
+    if (typeof fieldosVpRunStructuredSummary_ !== "function") {
+      throw new Error("fieldosVpRunStructuredSummary_ unavailable — update VoiceProcessing.gs first.");
+    }
+
+    let recordings = [];
+    if (typeof VoiceProcessingService !== "undefined" && VoiceProcessingService._loadJobRecordings_) {
+      recordings = VoiceProcessingService._loadJobRecordings_(jobSheetId) || [];
+    } else if (typeof DB !== "undefined" && DB.findWhere) {
+      recordings = DB.findWhere("tbl_recordings", { job_sheet_id: jobSheetId }) || [];
+    } else {
+      throw new Error("Cannot load tbl_recordings for dry-run.");
+    }
+
+    const agg = fieldosVpAggregateEligibleTranscripts_(recordings);
+    report.recording_count = agg.recordingCount;
+    report.transcript_character_count = agg.characterCount;
+    if (!agg.text) {
+      throw new Error("No Processed transcripts with text for job_sheet_id=" + jobSheetId);
+    }
+
+    const structured = fieldosVpRunStructuredSummary_(agg.text, {
+      job_sheet_id: jobSheetId,
+      recordingCount: agg.recordingCount,
+      characterCount: agg.characterCount
+    });
+    report.structured = structured;
+    report.parse_success = true;
+  } catch (err) {
+    report.error = String(err && err.message ? err.message : err);
+  }
+
+  // Log structured object only — never full transcript.
+  Logger.log(JSON.stringify(report, null, 2));
+  return report;
+}
+
+/**
+ * MANUAL TEST 9 — READ-ONLY structured writeback verification (default job 21759f5d).
+ * Reports AI job-sheet fields + recording_order duplicate scan.
+ * Does NOT log full ai_transcript (character count + short ai_summary preview only).
+ * Does NOT write Sheets / enqueue Queue / call GPT.
+ *
+ * @param {string=} jobSheetIdOpt
+ */
+function testFieldOSStructuredWritebackVerification(jobSheetIdOpt) {
+  const jobSheetId = String(
+    jobSheetIdOpt == null || jobSheetIdOpt === ""
+      ? FIELDOS_DIAG_JOB_SHEET_ID_
+      : jobSheetIdOpt
+  ).trim();
+
+  const report = {
+    diagnostic: "testFieldOSStructuredWritebackVerification",
+    read_only: true,
+    writes_sheets: false,
+    job_sheet_id: jobSheetId,
+    ai_transcript_populated: false,
+    ai_transcript_character_count: 0,
+    ai_summary_preview: "",
+    ai_summary: "",
+    client_requests: "",
+    variations: "",
+    safety_issues: "",
+    manager_review_items: "",
+    weather: "",
+    travel_time: "",
+    ai_confidence_score: "",
+    manager_notes: "",
+    approval_status: "",
+    processing_status: "",
+    processing_error: "",
+    duplicate_recording_orders: [],
+    recordings: [],
+    error: null
+  };
+
+  try {
+    if (typeof JobSheetRepository === "undefined" || !JobSheetRepository.findById) {
+      throw new Error("JobSheetRepository.findById unavailable.");
+    }
+    const job = JobSheetRepository.findById(jobSheetId);
+    if (!job) throw new Error("Job sheet not found: " + jobSheetId);
+
+    const transcript = String(job.ai_transcript == null ? "" : job.ai_transcript);
+    report.ai_transcript_populated = transcript.trim().length > 0;
+    report.ai_transcript_character_count = transcript.length;
+    // Never log full transcript.
+    const summary = String(job.ai_summary == null ? "" : job.ai_summary);
+    report.ai_summary = summary;
+    report.ai_summary_preview = summary.length > 160 ? summary.slice(0, 160) + "…" : summary;
+    report.client_requests = String(job.client_requests == null ? "" : job.client_requests);
+    report.variations = String(job.variations == null ? "" : job.variations);
+    report.safety_issues = String(job.safety_issues == null ? "" : job.safety_issues);
+    report.manager_review_items = String(
+      job.manager_review_items == null ? "" : job.manager_review_items
+    );
+    report.weather = String(job.weather == null ? "" : job.weather);
+    report.travel_time = String(job.travel_time == null ? "" : job.travel_time);
+    report.ai_confidence_score = String(
+      job.ai_confidence_score == null ? "" : job.ai_confidence_score
+    );
+    report.manager_notes = String(job.manager_notes == null ? "" : job.manager_notes);
+    report.approval_status = String(job.approval_status == null ? "" : job.approval_status);
+    report.processing_status = String(job.processing_status == null ? "" : job.processing_status);
+    report.processing_error = String(job.processing_error == null ? "" : job.processing_error);
+
+    let recordings = [];
+    if (typeof DB !== "undefined" && DB.findWhere) {
+      recordings = DB.findWhere("tbl_recordings", { job_sheet_id: jobSheetId }) || [];
+    } else if (
+      typeof VoiceProcessingService !== "undefined" &&
+      VoiceProcessingService._loadJobRecordings_
+    ) {
+      recordings = VoiceProcessingService._loadJobRecordings_(jobSheetId) || [];
+    }
+
+    const byOrder = {};
+    report.recordings = (recordings || []).map(function (r) {
+      const order = r.recording_order;
+      const key = String(order);
+      if (!byOrder[key]) byOrder[key] = [];
+      byOrder[key].push(String(r.recording_id || ""));
+      return {
+        recording_id: String(r.recording_id || ""),
+        recording_order: order,
+        status: String(r.status || ""),
+        created_at: r.created_at || null,
+        has_transcript: String(r.transcript || r.transcription || "").trim().length > 0
+      };
+    });
+
+    Object.keys(byOrder).forEach(function (key) {
+      if (byOrder[key].length > 1) {
+        report.duplicate_recording_orders.push({
+          recording_order: key,
+          recording_ids: byOrder[key]
+        });
+      }
+    });
   } catch (err) {
     report.error = String(err && err.message ? err.message : err);
   }

@@ -36,7 +36,17 @@ function saveRecording(payload) {
       job_sheet_id: jobSheetId
     });
 
-    const recordingOrder = existingRecordings.length + 1;
+    const recordingOrder = fieldosNextRecordingOrderFromRows_
+      ? fieldosNextRecordingOrderFromRows_(existingRecordings || [])
+      : (function () {
+          let maxOrder = 0;
+          const list = existingRecordings || [];
+          for (let i = 0; i < list.length; i++) {
+            const n = Number(list[i] && list[i].recording_order);
+            if (isFinite(n) && !isNaN(n) && n > maxOrder) maxOrder = Math.floor(n);
+          }
+          return maxOrder + 1;
+        })();
 
     const timestamp = Utilities.formatDate(
       new Date(),

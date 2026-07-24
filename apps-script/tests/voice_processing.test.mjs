@@ -101,8 +101,22 @@ function loadContext(overrides = {}) {
         });
         return "whisper:" + (audioBlob.getName() || "blob");
       },
-      chatComplete: function () {
-        throw new Error("chatComplete must not be called in this pass");
+      chatComplete: function (systemPrompt, userPrompt) {
+        openaiCalls.push({
+          kind: "chat",
+          systemPrompt: systemPrompt,
+          userPrompt: userPrompt,
+        });
+        return JSON.stringify({
+          summary: "Summary",
+          client_requests: [],
+          variations: [],
+          safety_issues: [],
+          manager_review_items: [],
+          weather: "",
+          travel_time: "",
+          confidence_score: 0.7,
+        });
       },
     };
   }
@@ -115,10 +129,20 @@ test("executePipeline extracts job_sheet_id and returns transcript", () => {
   const ctx = loadContext();
   ctx.VoiceProcessingService.processJobSheetRecordings = function (id) {
     assert.equal(id, "21759f5d");
-    return "hello transcript";
+    return "[Recording 1]\nhello transcript";
+  };
+  ctx.VoiceProcessingService._loadJobRecordings_ = function () {
+    return [
+      {
+        recording_id: "REC-1",
+        recording_order: 1,
+        status: "Processed",
+        transcript: "hello transcript",
+      },
+    ];
   };
   const out = ctx.VoiceProcessing.executePipeline({ job_sheet_id: "21759f5d" });
-  assert.equal(out, "hello transcript");
+  assert.match(out, /hello transcript/);
 });
 
 test("missing job_sheet_id throws", () => {
@@ -260,7 +284,8 @@ test("completed recordings remain idempotently skipped", () => {
     ];
   };
   const out = ctx.VoiceProcessingService.processJobSheetRecordings("21759f5d");
-  assert.equal(out, "already done");
+  assert.match(out, /\[Recording 1\]/);
+  assert.match(out, /already done/);
   assert.equal(ctx.__openaiCalls.length, 0);
 });
 
@@ -310,7 +335,7 @@ test("Invalid recordings are skipped without OpenAI calls", () => {
   };
 
   const out = ctx.VoiceProcessingService.processJobSheetRecordings("21759f5d");
-  assert.equal(out, "whisper:ok.webm");
+  assert.equal(out, "[Recording 1]\nwhisper:ok.webm");
   assert.equal(ctx.__openaiCalls.length, 1);
   assert.equal(writebacks.length, 1);
   assert.equal(writebacks[0].vals.status, "Processed");
@@ -418,12 +443,12 @@ test("missing OpenAI API key fails clearly", () => {
   );
 });
 
-test("Gemini is not called; chatComplete not wired into pipeline", () => {
+test("Gemini is not called; chatComplete is used for Phase 3A summary", () => {
   assert.doesNotMatch(vpSrc, /GEMINI_API_KEY/);
   assert.doesNotMatch(vpSrc, /generativelanguage\.googleapis/);
   assert.doesNotMatch(vpSrc, /gemini-1\.5/i);
   assert.match(vpSrc, /OpenAI\.transcribeAudio/);
-  assert.doesNotMatch(vpSrc, /OpenAI\.chatComplete/);
+  assert.match(vpSrc, /OpenAI\.chatComplete/);
 });
 
 test("NO_RECORDINGS and empty results fail; success marks Completed", () => {
@@ -431,16 +456,31 @@ test("NO_RECORDINGS and empty results fail; success marks Completed", () => {
   ctx.VoiceProcessingService.processJobSheetRecordings = function () {
     return "NO_RECORDINGS";
   };
+  ctx.VoiceProcessingService._loadJobRecordings_ = function () {
+    return [];
+  };
   assert.throws(
     () => ctx.VoiceProcessing.executePipeline({ job_sheet_id: "21759f5d" }),
     /no transcript aggregated/
   );
   ctx.VoiceProcessingService.processJobSheetRecordings = function () {
-    return "ok body";
+    return "[Recording 1]\nok body";
+  };
+  ctx.VoiceProcessingService._loadJobRecordings_ = function () {
+    return [
+      {
+        recording_id: "REC-1",
+        recording_order: 1,
+        status: "Processed",
+        transcript: "ok body",
+      },
+    ];
   };
   ctx.VoiceProcessing.executePipeline({ job_sheet_id: "21759f5d" });
-  assert.equal(ctx.__updates[0].patch.processing_status, "Completed");
-  assert.equal(ctx.__updates[0].patch.processing_error, "");
+  const finalPatch = ctx.__updates[ctx.__updates.length - 1].patch;
+  assert.equal(finalPatch.processing_status, "Completed");
+  assert.equal(finalPatch.processing_error, "");
+  assert.ok(finalPatch.ai_summary);
 });
 
 test("OpenAI.js exposes Whisper blob helper and OPENAI_API_KEY", () => {

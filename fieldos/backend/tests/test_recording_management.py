@@ -188,7 +188,31 @@ def test_recording_job_mismatch(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_invalidate_while_processing_blocked(client: TestClient) -> None:
+def test_next_recording_order_uses_max_plus_one_after_gap(client: TestClient) -> None:
+    """Mock store must not reuse orders after deletions (length+1 collision)."""
+    from app.core.config import get_settings
+    from app.services.mock_store import MockStore
+
+    token = _login(client)
+    job_id = _job_id(client, token)
+    headers = {"Authorization": f"Bearer {token}"}
+    first = _upload(client, token, job_id).json()
+    second = _upload(client, token, job_id).json()
+    assert first["recording_order"] == 1
+    assert second["recording_order"] == 2
+
+    # Delete order 1 → length=1 but max remaining is 2 → next must be 3 not 2.
+    del_resp = client.delete(
+        f"/api/v1/jobs/{job_id}/recordings/{first['recording_id']}",
+        headers=headers,
+    )
+    assert del_resp.status_code == 200, del_resp.text
+
+    store = MockStore(get_settings())
+    assert store.next_recording_order(job_id) == 3
+    third = _upload(client, token, job_id).json()
+    assert third["recording_order"] == 3
+
     token = _login(client)
     job_id = _job_id(client, token)
     up = _upload(client, token, job_id)

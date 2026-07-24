@@ -48,6 +48,11 @@ function loadGateway(harness) {
         harness.sync.push(row);
       },
     },
+    Utils: {
+      withLock(_name, _timeout, fn) {
+        return fn();
+      },
+    },
     DB: {
       findById(table, key, id) {
         harness.dbCalls.push({ op: "findById", table, key, id });
@@ -60,7 +65,16 @@ function loadGateway(harness) {
           Object.keys(cond).every((k) => String(r[k]) === String(cond[k]))
         );
       },
-      insertRecord() {},
+      insertRecord(table, row, options) {
+        harness.dbCalls.push({
+          op: "insertRecord",
+          table,
+          alreadyLocked: !!(options && options.alreadyLocked),
+          recording_order: row && row.recording_order,
+        });
+        harness.recordings.push({ ...row });
+        return row;
+      },
       updateRecord(table, key, id, patch) {
         harness.dbCalls.push({ op: "updateRecord", table, key, id, patch });
         const row = harness.recordings.find((r) => String(r[key]) === String(id));
@@ -334,7 +348,7 @@ test("Invalid rows skipped by VoiceProcessing with no OpenAI call", () => {
   };
   ctx.VoiceProcessingService._updateRowValue = () => {};
   const out = ctx.VoiceProcessingService.processJobSheetRecordings("21759f5d");
-  assert.equal(out, "whisper:ok.webm");
+  assert.equal(out, "[Recording 1]\nwhisper:ok.webm");
   assert.equal(ctx.__openaiCalls.length, 1);
 });
 

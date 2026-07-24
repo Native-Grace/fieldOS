@@ -38,7 +38,16 @@ function saveRecording(payload) {
   if (!jobSheet) throw new Error('Job sheet not found');
 
   const existing = RecordingRepository.find({ job_sheet_id: jobSheetId }) || [];
-  const nextOrder = existing.length + 1;
+  const nextOrder = fieldosNextRecordingOrderFromRows_
+    ? fieldosNextRecordingOrderFromRows_(existing)
+    : (function () {
+        let maxOrder = 0;
+        for (let i = 0; i < existing.length; i++) {
+          const n = Number(existing[i] && existing[i].recording_order);
+          if (isFinite(n) && !isNaN(n) && n > maxOrder) maxOrder = Math.floor(n);
+        }
+        return maxOrder + 1;
+      })();
 
   const recordingId = Utilities.generateId('REC');
 
