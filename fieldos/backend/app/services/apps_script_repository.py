@@ -33,6 +33,10 @@ def _raise_from_apps(exc: AppsScriptError) -> None:
         raise HTTPException(status_code=404, detail=detail) from exc
     if "conflict" in lower or "changed since you loaded" in lower:
         raise HTTPException(status_code=409, detail=message) from exc
+    if "validation error" in lower:
+        raise HTTPException(status_code=422, detail=message) from exc
+    if code == 422:
+        raise HTTPException(status_code=422, detail=message) from exc
     if code == 409 or ("processing" in lower and "cannot change recordings" in lower):
         raise HTTPException(
             status_code=409,
@@ -202,6 +206,68 @@ class AppsScriptJobRepository:
             raise HTTPException(status_code=502, detail="Apps Script returned no job")
         warnings = data.get("warnings") if isinstance(data.get("warnings"), list) else []
         return {"job": self._job_row(job), "warnings": [str(w) for w in warnings]}
+
+    def _completion_payload(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "completion": data.get("completion"),
+            "labour_entries": data.get("labour_entries") or [],
+            "machinery_entries": data.get("machinery_entries") or [],
+            "material_entries": data.get("material_entries") or [],
+            "can_edit": bool(data.get("can_edit")),
+            "can_finalise": bool(data.get("can_finalise")),
+            "can_reopen": bool(data.get("can_reopen")),
+            "can_generate": bool(data.get("can_generate")),
+        }
+
+    async def aget_job_completion(
+        self, job_sheet_id: str, staff_id: str, actor_role: str
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.get_job_completion(
+                {
+                    "job_sheet_id": job_sheet_id,
+                    "staff_id": staff_id,
+                    "actor_staff_id": staff_id,
+                    "actor_role": actor_role,
+                }
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return self._completion_payload(data)
+
+    async def alist_job_completions(self, actor_role: str, staff_id: str) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.list_job_completions(
+                {"actor_role": actor_role, "staff_id": staff_id, "actor_staff_id": staff_id}
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        items = data.get("items") if isinstance(data.get("items"), list) else []
+        return {"items": [item for item in items if isinstance(item, dict)]}
+
+    async def acompletion_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if action == "create_job_completion_draft":
+                result = await self.apps_script.create_job_completion_draft(body)
+            elif action == "generate_job_completion_draft":
+                result = await self.apps_script.generate_job_completion_draft(body)
+            elif action == "update_job_completion":
+                result = await self.apps_script.update_job_completion(body)
+            elif action == "finalise_job_completion":
+                result = await self.apps_script.finalise_job_completion(body)
+            elif action == "reopen_job_completion":
+                result = await self.apps_script.reopen_job_completion(body)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown completion action: {action}")
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return self._completion_payload(data)
 
     async def register_recording_remote(
         self,

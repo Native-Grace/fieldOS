@@ -141,6 +141,10 @@ class AppsScriptClient:
                 code = 403
             if "not found" in lower:
                 code = 404
+            if "conflict" in lower or "changed since you loaded" in lower:
+                code = 409
+            if "validation error" in lower:
+                code = 422
             if "processing" in lower and ("cannot" in lower or "while" in lower or "blocked" in lower):
                 code = 409
             if "drive cleanup" in lower or "could not delete recording file" in lower:
@@ -254,6 +258,34 @@ class AppsScriptClient:
     async def reopen_job_sheet(self, body: dict[str, Any]) -> dict[str, Any]:
         safe_body = redact_secrets(body)
         return await self._post("reopen_job_sheet", {**safe_body, **self._column_payload()})
+
+    async def get_job_completion(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("get_job_completion", {**safe_body, **self._column_payload()})
+
+    async def create_job_completion_draft(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("create_job_completion_draft", {**safe_body, **self._column_payload()})
+
+    async def generate_job_completion_draft(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("generate_job_completion_draft", {**safe_body, **self._column_payload()})
+
+    async def update_job_completion(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("update_job_completion", {**safe_body, **self._column_payload()})
+
+    async def finalise_job_completion(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("finalise_job_completion", {**safe_body, **self._column_payload()})
+
+    async def reopen_job_completion(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("reopen_job_completion", {**safe_body, **self._column_payload()})
+
+    async def list_job_completions(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("list_job_completions", {**safe_body, **self._column_payload()})
 
     async def register_recording(self, body: dict[str, Any]) -> dict[str, Any]:
         safe_body = redact_secrets(body)

@@ -127,7 +127,14 @@ function routeRequest(payload) {
     case "update_job_review":
     case "approve_job_sheet":
     case "return_job_sheet":
-    case "reopen_job_sheet": {
+    case "reopen_job_sheet":
+    case "get_job_completion":
+    case "create_job_completion_draft":
+    case "generate_job_completion_draft":
+    case "update_job_completion":
+    case "finalise_job_completion":
+    case "reopen_job_completion":
+    case "list_job_completions": {
       const fieldosResult = fieldosRouteRequest(payload);
       if (!fieldosResult) {
         throw new Error(`Routing Failure: Action '${action}' is unsupported.`);

@@ -319,8 +319,37 @@ audio {
 
 .ok { color: var(--ok); font-size: 0.9rem; }
 .error { color: var(--danger); font-size: 0.9rem; }
+.warn { color: var(--warn); font-size: 0.9rem; background: #fff4d9; border-radius: 12px; padding: 10px; margin: 8px 0; }
 .card.nested { margin-top: 12px; box-shadow: none; border: 1px solid #c5d2c8; }
+
+.completion-panel h3 {
+  margin: 18px 0 8px;
+  font-size: 1rem;
+}
+
+.completion-table {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.completion-row {
+  border: 1px solid #c5d2c8;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
+}
+
+.completion-row .field {
+  margin-bottom: 8px;
+}
 
 @media (min-width: 720px) {
   .app-shell { max-width: 720px; }
+  .completion-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+  }
 }

@@ -108,6 +108,155 @@ class ReopenJobRequest(BaseModel):
     expected_processing_completed_at: Optional[str] = None
 
 
+class LabourEntry(BaseModel):
+    labour_id: Optional[str] = None
+    completion_id: Optional[str] = None
+    job_sheet_id: Optional[str] = None
+    staff_id: str = ""
+    staff_name: str = ""
+    work_date: Optional[str] = None
+    start_time: str = ""
+    finish_time: str = ""
+    break_minutes: float = 0
+    labour_hours: Optional[float] = None
+    travel_minutes: float = 0
+    travel_hours: Optional[float] = None
+    role_or_activity: str = ""
+    billable: bool = False
+    confirmation_status: str = "Suggested"
+    notes: str = ""
+    source: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    updated_at: Optional[Union[datetime, str]] = None
+    confidence: Optional[float] = None
+
+
+class MachineryEntry(BaseModel):
+    machinery_entry_id: Optional[str] = None
+    completion_id: Optional[str] = None
+    job_sheet_id: Optional[str] = None
+    equipment_name: str = ""
+    operator_staff_id: str = ""
+    start_time: str = ""
+    finish_time: str = ""
+    duration_hours: Optional[float] = None
+    billable: bool = False
+    confirmation_status: str = "Suggested"
+    charge_code: str = ""
+    notes: str = ""
+    source: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    updated_at: Optional[Union[datetime, str]] = None
+    confidence: Optional[float] = None
+
+
+class MaterialEntry(BaseModel):
+    material_entry_id: Optional[str] = None
+    completion_id: Optional[str] = None
+    job_sheet_id: Optional[str] = None
+    item_name: str = ""
+    quantity: Optional[float] = None
+    unit: str = ""
+    billable: bool = False
+    confirmation_status: str = "Suggested"
+    notes: str = ""
+    source: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    updated_at: Optional[Union[datetime, str]] = None
+    confidence: Optional[float] = None
+
+
+class JobCompletionOut(BaseModel):
+    completion_id: str
+    job_sheet_id: str
+    completion_status: str = "Draft"
+    work_summary: str = ""
+    invoice_description: str = ""
+    internal_notes: str = ""
+    total_labour_hours: float = 0
+    total_travel_hours: float = 0
+    total_machinery_hours: float = 0
+    billable_labour_hours: float = 0
+    non_billable_labour_hours: float = 0
+    variations: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    created_by: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    updated_by: str = ""
+    updated_at: Optional[Union[datetime, str]] = None
+    finalised_by: str = ""
+    finalised_at: Optional[Union[datetime, str]] = None
+    reopened_by: str = ""
+    reopened_at: Optional[Union[datetime, str]] = None
+    reopen_reason: str = ""
+    version: int = 1
+    blocked: bool = False
+    job_approval_status: str = ""
+    job_processing_status: str = ""
+
+
+class JobCompletionResponse(BaseModel):
+    completion: Optional[JobCompletionOut] = None
+    labour_entries: List[LabourEntry] = Field(default_factory=list)
+    machinery_entries: List[MachineryEntry] = Field(default_factory=list)
+    material_entries: List[MaterialEntry] = Field(default_factory=list)
+    can_edit: bool = False
+    can_finalise: bool = False
+    can_reopen: bool = False
+    can_generate: bool = False
+    data_mode: str
+    assumptions: List[str]
+
+
+class CompletionListItem(BaseModel):
+    completion_id: str
+    job_sheet_id: str
+    completion_status: str = ""
+    updated_at: Optional[Union[datetime, str]] = None
+    finalised_at: Optional[Union[datetime, str]] = None
+    version: int = 1
+
+
+class CompletionListResponse(BaseModel):
+    items: List[CompletionListItem]
+    data_mode: str
+    assumptions: List[str]
+
+
+class CompletionUpdateRequest(BaseModel):
+    work_summary: Optional[str] = None
+    invoice_description: Optional[str] = None
+    internal_notes: Optional[str] = None
+    variations: Optional[List[str]] = None
+    warnings: Optional[List[str]] = None
+    completion_status: Optional[str] = None
+    labour_entries: Optional[List[LabourEntry]] = None
+    machinery_entries: Optional[List[MachineryEntry]] = None
+    material_entries: Optional[List[MaterialEntry]] = None
+    expected_version: Optional[int] = None
+    # Client totals intentionally ignored server-side.
+    total_labour_hours: Optional[float] = None
+    total_travel_hours: Optional[float] = None
+    total_machinery_hours: Optional[float] = None
+    billable_labour_hours: Optional[float] = None
+    non_billable_labour_hours: Optional[float] = None
+
+
+class CompletionGenerateRequest(BaseModel):
+    expected_version: Optional[int] = None
+    staff_name: Optional[str] = None
+
+
+class CompletionFinaliseRequest(BaseModel):
+    expected_version: Optional[int] = None
+    override_reason: Optional[str] = None
+
+
+class CompletionReopenRequest(BaseModel):
+    reopen_reason: str = Field(min_length=1, max_length=500)
+    expected_version: Optional[int] = None
+
+
 class JobListResponse(BaseModel):
     items: List[JobSummary]
     days: int

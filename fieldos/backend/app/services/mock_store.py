@@ -217,3 +217,37 @@ class MockStore:
         entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
         rows.append(entry)
         self._write(path, rows)
+
+    @property
+    def completions_path(self) -> Path:
+        return self.root / "completions.json"
+
+    def list_completions(self) -> list[dict[str, Any]]:
+        if not self.completions_path.exists():
+            return []
+        return self._read(self.completions_path)
+
+    def get_completion_for_job(self, job_sheet_id: str) -> dict[str, Any] | None:
+        rows = [
+            row
+            for row in self.list_completions()
+            if str(row.get("job_sheet_id")) == str(job_sheet_id)
+        ]
+        if not rows:
+            return None
+        rows.sort(key=lambda row: int(row.get("version") or 0), reverse=True)
+        return rows[0]
+
+    def upsert_completion(self, completion: dict[str, Any]) -> dict[str, Any]:
+        rows = self.list_completions()
+        completion_id = str(completion.get("completion_id") or "")
+        replaced = False
+        for idx, row in enumerate(rows):
+            if str(row.get("completion_id")) == completion_id:
+                rows[idx] = completion
+                replaced = True
+                break
+        if not replaced:
+            rows.append(completion)
+        self._write(self.completions_path, rows)
+        return completion

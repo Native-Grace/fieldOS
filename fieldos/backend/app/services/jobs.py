@@ -199,6 +199,60 @@ class JobService:
         )
         return result
 
+    async def get_completion(
+        self, job_sheet_id: str, staff_id: str, actor_role: str
+    ) -> dict[str, Any]:
+        if isinstance(self.repo, AppsScriptJobRepository):
+            return await self.repo.aget_job_completion(job_sheet_id, staff_id, actor_role)
+        return await self.repo.aget_job_completion(job_sheet_id, staff_id, actor_role)
+
+    async def list_completions(self, staff_id: str, actor_role: str) -> dict[str, Any]:
+        if isinstance(self.repo, AppsScriptJobRepository):
+            return await self.repo.alist_job_completions(actor_role, staff_id)
+        return await self.repo.alist_job_completions(actor_role)
+
+    async def completion_action(
+        self,
+        action: str,
+        *,
+        job_sheet_id: str,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            **body,
+            "job_sheet_id": job_sheet_id,
+            "staff_id": staff_id,
+            "actor_staff_id": staff_id,
+            "actor_role": actor_role,
+            "actor_identity": actor_identity,
+        }
+        # Never trust client totals.
+        for key in (
+            "total_labour_hours",
+            "total_travel_hours",
+            "total_machinery_hours",
+            "billable_labour_hours",
+            "non_billable_labour_hours",
+        ):
+            payload.pop(key, None)
+        payload.pop("ai_transcript", None)
+        result = await self.repo.acompletion_action(action, payload)
+        log_extra(
+            logger,
+            20,
+            "Job completion action",
+            action=action,
+            job_sheet_id=job_sheet_id,
+            staff_id=staff_id,
+            actor_role=actor_role,
+            reopen_reason_present=bool(str(body.get("reopen_reason") or "").strip()),
+            override_reason_present=bool(str(body.get("override_reason") or "").strip()),
+        )
+        return result
+
     async def save_recording(
         self,
         job_sheet_id: str,

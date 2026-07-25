@@ -72,6 +72,20 @@ function fieldosRouteRequest(payload) {
       return FieldOSGateway.returnJobSheet(payload);
     case "reopen_job_sheet":
       return FieldOSGateway.reopenJobSheet(payload);
+    case "get_job_completion":
+      return FieldOSJobCompletion.getJobCompletion(payload);
+    case "create_job_completion_draft":
+      return FieldOSJobCompletion.createJobCompletionDraft(payload);
+    case "generate_job_completion_draft":
+      return FieldOSJobCompletion.generateJobCompletionDraft(payload);
+    case "update_job_completion":
+      return FieldOSJobCompletion.updateJobCompletion(payload);
+    case "finalise_job_completion":
+      return FieldOSJobCompletion.finaliseJobCompletion(payload);
+    case "reopen_job_completion":
+      return FieldOSJobCompletion.reopenJobCompletion(payload);
+    case "list_job_completions":
+      return FieldOSJobCompletion.listJobCompletions(payload);
     default:
       return null;
   }
@@ -146,6 +160,30 @@ var FIELDOS_REVIEW_EDITABLE_KEYS_ = [
   "travel_time",
   "manager_notes"
 ];
+
+/**
+ * Sanitised timing log for get_job_detail stages.
+ * Logs stage durations, recording count, and role only.
+ * NEVER logs transcript, notes, Drive IDs, customer text, or secrets.
+ */
+function fieldosLogJobDetailTiming_(jobSheetId, actorRole, timings, recordingCount) {
+  try {
+    const payload = {
+      fieldos_timing: "get_job_detail",
+      job_sheet_id: String(jobSheetId || ""),
+      actor_role: fieldosNormalizeRole_(actorRole),
+      recording_count: Number(recordingCount || 0),
+      stages_ms: timings || {}
+    };
+    if (typeof console !== "undefined" && console.log) {
+      console.log(JSON.stringify(payload));
+    } else if (typeof Logger !== "undefined" && Logger.log) {
+      Logger.log(JSON.stringify(payload));
+    }
+  } catch (err) {
+    /* timing log must never break the request */
+  }
+}
 
 /**
  * Pick only columns that exist on tbl_job_sheets (header-safe).
@@ -609,7 +647,48 @@ var FieldOSGateway = {
     };
   },
 
+  /**
+   * Lightweight per-job project/customer resolution.
+   * Skips full tbl_projects / tbl_customers master scans when the job row already
+   * carries a customer name. Otherwise performs targeted single-record lookups only.
+   * Never touches completion tables, OpenAI, locks, or writes.
+   */
+  _buildJobDetailDisplayMaps_: function(job, cols) {
+    const empty = {
+      projectById: {},
+      customerById: {},
+      projectByExactName: {},
+      projectByNormName: {}
+    };
+    if (!job) return empty;
+    // Fast path: customer already resolvable on the row — _normalizeJob keeps it.
+    if (String(job[cols.customer] || "").trim()) return empty;
+    const projectKey = String(job[cols.project] || "").trim();
+    if (!projectKey) return empty;
+    try {
+      let project = null;
+      if (typeof ProjectRepository !== "undefined" && ProjectRepository.findById) {
+        project = ProjectRepository.findById(projectKey);
+        if (!project && ProjectRepository.findByField) {
+          project = ProjectRepository.findByField("project_name", projectKey);
+        }
+      }
+      if (!project) return empty;
+      let customers = [];
+      const customerId = String(project.customer_id || "").trim();
+      if (customerId && typeof CustomerRepository !== "undefined" && CustomerRepository.findById) {
+        const customer = CustomerRepository.findById(customerId);
+        if (customer) customers = [customer];
+      }
+      return fieldosBuildDisplayMaps_([project], customers);
+    } catch (err) {
+      return empty;
+    }
+  },
+
   getJobDetail: function(payload) {
+    const detailStart = Date.now();
+    const timings = {};
     const jobSheetId = payload.job_sheet_id;
     const staffId = payload.staff_id;
     if (!jobSheetId) throw new Error("Missing required attribute: job_sheet_id.");
@@ -623,9 +702,14 @@ var FieldOSGateway = {
       customer: this._col(payload, "customer_column", "customer_name")
     };
 
+    // Stage: job row lookup (single tbl_job_sheets read).
+    let stageStart = Date.now();
     const job = JobSheetRepository.findById(jobSheetId);
+    timings.job_lookup_ms = Date.now() - stageStart;
     this._assertJobAccess(job, staffId, cols.assignment, actorRole);
 
+    // Stage: recordings lookup (single tbl_recordings read).
+    stageStart = Date.now();
     let recordings = [];
     try {
       recordings = RecordingRepository.find({ job_sheet_id: jobSheetId }) || [];
@@ -633,8 +717,15 @@ var FieldOSGateway = {
       // RecordingRepository constructor bug in production export — fall back to DB
       recordings = DB.findWhere("tbl_recordings", { job_sheet_id: jobSheetId }) || [];
     }
+    timings.recordings_lookup_ms = Date.now() - stageStart;
 
-    const displayMaps = fieldosLoadDisplayMaps_();
+    // Stage: customer/project resolution (targeted; skips master scans when possible).
+    stageStart = Date.now();
+    const displayMaps = this._buildJobDetailDisplayMaps_(job, cols);
+    timings.customer_project_resolution_ms = Date.now() - stageStart;
+
+    // Stage: review field mapping.
+    stageStart = Date.now();
     const normalized = this._normalizeJob(job, cols, displayMaps);
 
     // Full transcript only for manager/admin when explicitly requested.
@@ -643,8 +734,10 @@ var FieldOSGateway = {
     if (includeTranscript && fieldosIsManagerOrAdmin_(actorRole)) {
       normalized.ai_transcript = String(job.ai_transcript == null ? "" : job.ai_transcript);
     }
+    timings.review_field_mapping_ms = Date.now() - stageStart;
 
-    // Strip Drive file IDs from staff-facing recording payloads unless manager.
+    // Stage: response serialisation (recording summaries only — no completion data).
+    stageStart = Date.now();
     const recordingsOut = recordings.map(function (row) {
       const rec = FieldOSGateway._normalizeRecording(row);
       if (!fieldosIsManagerOrAdmin_(actorRole)) {
@@ -652,8 +745,7 @@ var FieldOSGateway = {
       }
       return rec;
     });
-
-    return {
+    const result = {
       action: "get_job_detail",
       message: "OK",
       job_sheet_id: jobSheetId,
@@ -662,6 +754,11 @@ var FieldOSGateway = {
         recordings: recordingsOut
       }
     };
+    timings.serialisation_ms = Date.now() - stageStart;
+    timings.total_ms = Date.now() - detailStart;
+
+    fieldosLogJobDetailTiming_(jobSheetId, actorRole, timings, recordingsOut.length);
+    return result;
   },
 
   registerRecording: function(payload) {
@@ -1162,4 +1259,46 @@ function testFieldOSListJobs() {
 
   const result = fieldosRouteRequest(payload);
   Logger.log(JSON.stringify(result, null, 2));
+}
+
+/**
+ * READ-ONLY DIAGNOSTIC: measure get_job_detail stage durations for one job.
+ * Logs stage timings only — no transcript, notes, Drive IDs, or sensitive text.
+ * Performs no writes, no locks, no completion access, no OpenAI, no migrations.
+ *
+ * Usage in the Apps Script editor: testFieldOSGetJobDetailTiming('21759f5d')
+ */
+function testFieldOSGetJobDetailTiming(jobSheetId, actorRole) {
+  const id = String(jobSheetId || "").trim();
+  if (!id) {
+    Logger.log("testFieldOSGetJobDetailTiming: pass a job_sheet_id, e.g. '21759f5d'.");
+    return;
+  }
+  const job = JobSheetRepository.findById(id);
+  if (!job) {
+    Logger.log("testFieldOSGetJobDetailTiming: job not found: " + id);
+    return;
+  }
+  const role = actorRole || "manager";
+  const staffId = String(job.staff_id || "DIAGNOSTIC");
+  const start = Date.now();
+  const result = FieldOSGateway.getJobDetail({
+    action: "get_job_detail",
+    job_sheet_id: id,
+    staff_id: staffId,
+    actor_role: role,
+    include_transcript: false
+  });
+  // getJobDetail already emits sanitised stage timings via fieldosLogJobDetailTiming_.
+  Logger.log(
+    JSON.stringify({
+      diagnostic: "get_job_detail_timing",
+      job_sheet_id: id,
+      actor_role: fieldosNormalizeRole_(role),
+      total_ms: Date.now() - start,
+      recording_count: (result && result.data && result.data.recordings)
+        ? result.data.recordings.length
+        : 0
+    })
+  );
 }

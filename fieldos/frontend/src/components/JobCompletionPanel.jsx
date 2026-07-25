@@ -1,0 +1,607 @@
+import { useEffect, useMemo, useState } from "react";
+import { api, ApiError, getStaff } from "../api";
+import { isManagerRole } from "../managerReviewHelpers.mjs";
+import {
+  COMPLETION_STATUSES,
+  ROW_CONFIRMATION,
+  buildCompletionForm,
+  canFinaliseClient,
+  completionHasUnsavedChanges,
+  displayLabourHours,
+  emptyLabourRow,
+  emptyMachineryRow,
+  emptyMaterialRow,
+  EMPTY_COMPLETION_FORM,
+} from "../jobCompletionHelpers.mjs";
+
+export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
+  const staff = getStaff();
+  const manager = isManagerRole(staff?.role);
+
+  const [payload, setPayload] = useState(null);
+  const [form, setForm] = useState(EMPTY_COMPLETION_FORM);
+  const [baseline, setBaseline] = useState(EMPTY_COMPLETION_FORM);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
+  const [showReopen, setShowReopen] = useState(false);
+  // Lazy: completion is a separate, heavier round-trip. Do NOT fetch on job open —
+  // it must never block or slow down core job detail rendering.
+  const [opened, setOpened] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const dirty = useMemo(() => completionHasUnsavedChanges(form, baseline), [form, baseline]);
+  const completion = payload?.completion;
+
+  async function load() {
+    setError("");
+    setLoading(true);
+    try {
+      const data = await api(`/jobs/${encodeURIComponent(jobSheetId)}/completion`);
+      setPayload(data);
+      if (data.completion) {
+        const next = buildCompletionForm(data);
+        setForm(next);
+        setBaseline(next);
+      } else {
+        setForm(EMPTY_COMPLETION_FORM);
+        setBaseline(EMPTY_COMPLETION_FORM);
+      }
+      return data;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Reset when navigating between jobs so a stale panel never shows.
+  useEffect(() => {
+    setOpened(false);
+    setPayload(null);
+    setForm(EMPTY_COMPLETION_FORM);
+    setBaseline(EMPTY_COMPLETION_FORM);
+    setError("");
+    setMessage("");
+  }, [jobSheetId]);
+
+  function openPanel() {
+    if (opened) return;
+    setOpened(true);
+    load().catch((err) => setError(String(err.message || err)));
+  }
+
+  useEffect(() => {
+    function onBeforeUnload(event) {
+      if (!dirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+
+  function setLabour(index, patch) {
+    setForm((prev) => {
+      const labour_entries = prev.labour_entries.slice();
+      labour_entries[index] = { ...labour_entries[index], ...patch };
+      return { ...prev, labour_entries };
+    });
+  }
+
+  function setMachinery(index, patch) {
+    setForm((prev) => {
+      const machinery_entries = prev.machinery_entries.slice();
+      machinery_entries[index] = { ...machinery_entries[index], ...patch };
+      return { ...prev, machinery_entries };
+    });
+  }
+
+  function setMaterial(index, patch) {
+    setForm((prev) => {
+      const material_entries = prev.material_entries.slice();
+      material_entries[index] = { ...material_entries[index], ...patch };
+      return { ...prev, material_entries };
+    });
+  }
+
+  async function runAction(path, method, body) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await api(path, { method, json: body });
+      setPayload(data);
+      const next = buildCompletionForm(data);
+      setForm(next);
+      setBaseline(next);
+      setMessage(data.completion?.completion_status || "Saved");
+      if (onUpdated) onUpdated(data);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setError("This completion changed elsewhere. Refresh and try again.");
+      } else {
+        setError(String(err.message || err));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateDraft() {
+    await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion/generate`, "POST", {
+      expected_version: completion?.version,
+      staff_name: staff?.staff_name || "",
+    });
+  }
+
+  async function createEmptyDraft() {
+    await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion`, "POST", {});
+  }
+
+  async function saveDraft(extra = {}) {
+    await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion`, "PATCH", {
+      ...form,
+      expected_version: completion?.version,
+      ...extra,
+    });
+  }
+
+  async function markReady() {
+    await saveDraft({ completion_status: COMPLETION_STATUSES.READY });
+  }
+
+  async function finalise() {
+    if (!canFinaliseClient(form)) {
+      setError("Confirm or exclude all suggested rows and complete required fields before finalising.");
+      return;
+    }
+    if (!window.confirm("Finalise this job completion? It will become read-only.")) return;
+    await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion/finalise`, "POST", {
+      expected_version: completion?.version,
+    });
+  }
+
+  async function reopen() {
+    if (!String(reopenReason || "").trim()) {
+      setError("Reopen reason is required.");
+      return;
+    }
+    await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion/reopen`, "POST", {
+      expected_version: completion?.version,
+      reopen_reason: reopenReason.trim(),
+    });
+    setShowReopen(false);
+    setReopenReason("");
+  }
+
+  const editable = Boolean(payload?.can_edit);
+  const readOnly = !editable;
+
+  if (!opened) {
+    return (
+      <section className="card completion-panel" aria-labelledby="completion-heading">
+        <h2 id="completion-heading">Job completion</h2>
+        <p className="small muted">
+          Timesheets, labour, machinery, materials, and invoice-ready description. Loaded on demand
+          so it never delays the job page.
+        </p>
+        <button className="btn btn-ghost" type="button" onClick={openPanel}>
+          Show job completion
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card completion-panel" aria-labelledby="completion-heading">
+      <h2 id="completion-heading">Job completion</h2>
+      <p className="small muted">
+        Timesheets, labour, machinery, materials, and invoice-ready description. Structured output
+        only — no invoice or payroll posting.
+      </p>
+      {loading ? <p className="small muted">Loading completion…</p> : null}
+
+      {completion ? (
+        <div className="meta" style={{ marginBottom: 12 }}>
+          <span className="badge">{completion.completion_status}</span>
+          {completion.blocked ? <span className="badge failed">Blocked</span> : null}
+          <span className="small muted">v{completion.version}</span>
+          <span className="small muted">
+            Labour {completion.total_labour_hours}h · Travel {completion.total_travel_hours}h ·
+            Machinery {completion.total_machinery_hours}h
+          </span>
+        </div>
+      ) : (
+        <p className="small muted">No completion draft yet.</p>
+      )}
+
+      {error ? <div className="error" role="alert">{error}</div> : null}
+      {message ? <div className="ok small">{message}</div> : null}
+      {dirty ? <div className="warn small">You have unsaved changes.</div> : null}
+
+      {(form.warnings || []).length ? (
+        <div className="warn" role="status">
+          <strong>Warnings</strong>
+          <ul>
+            {form.warnings.map((w, i) => (
+              <li key={`w-${i}`}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {!completion && manager && payload?.can_generate ? (
+        <div className="row-actions">
+          <button className="btn" type="button" disabled={busy} onClick={generateDraft}>
+            Generate draft from approved job
+          </button>
+          <button className="btn btn-ghost" type="button" disabled={busy} onClick={createEmptyDraft}>
+            Create empty draft
+          </button>
+        </div>
+      ) : null}
+
+      {completion ? (
+        <>
+          <div className="field">
+            <label htmlFor="work-summary">Work summary</label>
+            <textarea
+              id="work-summary"
+              rows={3}
+              value={form.work_summary}
+              disabled={readOnly || busy}
+              onChange={(e) => setForm({ ...form, work_summary: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="invoice-description">Invoice description</label>
+            <textarea
+              id="invoice-description"
+              rows={3}
+              value={form.invoice_description}
+              disabled={readOnly || busy}
+              onChange={(e) => setForm({ ...form, invoice_description: e.target.value })}
+            />
+          </div>
+          {manager ? (
+            <div className="field">
+              <label htmlFor="internal-notes">Internal notes</label>
+              <textarea
+                id="internal-notes"
+                rows={2}
+                value={form.internal_notes}
+                disabled={readOnly || busy}
+                onChange={(e) => setForm({ ...form, internal_notes: e.target.value })}
+              />
+            </div>
+          ) : null}
+
+          <h3>Labour</h3>
+          <div className="completion-table" role="table" aria-label="Labour entries">
+            {form.labour_entries.map((row, index) => (
+              <div className="completion-row" role="row" key={row.labour_id || `lab-${index}`}>
+                <div className="field">
+                  <label htmlFor={`lab-staff-${index}`}>Staff</label>
+                  <input
+                    id={`lab-staff-${index}`}
+                    value={row.staff_name || row.staff_id || ""}
+                    disabled={readOnly || busy}
+                    onChange={(e) => setLabour(index, { staff_name: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={`lab-start-${index}`}>Start</label>
+                  <input
+                    id={`lab-start-${index}`}
+                    type="time"
+                    value={row.start_time || ""}
+                    disabled={readOnly || busy}
+                    onChange={(e) => setLabour(index, { start_time: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={`lab-finish-${index}`}>Finish</label>
+                  <input
+                    id={`lab-finish-${index}`}
+                    type="time"
+                    value={row.finish_time || ""}
+                    disabled={readOnly || busy}
+                    onChange={(e) => setLabour(index, { finish_time: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={`lab-break-${index}`}>Break (min)</label>
+                  <input
+                    id={`lab-break-${index}`}
+                    type="number"
+                    min="0"
+                    value={row.break_minutes ?? 0}
+                    disabled={readOnly || busy}
+                    onChange={(e) => setLabour(index, { break_minutes: Number(e.target.value) })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={`lab-travel-${index}`}>Travel (min)</label>
+                  <input
+                    id={`lab-travel-${index}`}
+                    type="number"
+                    min="0"
+                    value={row.travel_minutes ?? 0}
+                    disabled={readOnly || busy}
+                    onChange={(e) => setLabour(index, { travel_minutes: Number(e.target.value) })}
+                  />
+                </div>
+                <div className="small muted">
+                  Net hours: {displayLabourHours(row) ?? "—"} · {row.confirmation_status}
+                </div>
+                {!readOnly ? (
+                  <div className="row-actions">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={!!row.billable}
+                        disabled={busy}
+                        onChange={(e) => setLabour(index, { billable: e.target.checked })}
+                      />{" "}
+                      Billable
+                    </label>
+                    <select
+                      aria-label={`Labour confirmation ${index + 1}`}
+                      value={row.confirmation_status || ROW_CONFIRMATION.SUGGESTED}
+                      disabled={busy}
+                      onChange={(e) => setLabour(index, { confirmation_status: e.target.value })}
+                    >
+                      <option value={ROW_CONFIRMATION.SUGGESTED}>Suggested</option>
+                      <option value={ROW_CONFIRMATION.CONFIRMED}>Confirmed</option>
+                      <option value={ROW_CONFIRMATION.EXCLUDED}>Excluded</option>
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          {!readOnly ? (
+            <button
+              className="btn btn-ghost"
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                setForm({ ...form, labour_entries: [...form.labour_entries, emptyLabourRow()] })
+              }
+            >
+              Add labour row
+            </button>
+          ) : null}
+
+          <h3>Machinery</h3>
+          <div className="completion-table" role="table" aria-label="Machinery entries">
+            {form.machinery_entries.map((row, index) => (
+              <div className="completion-row" role="row" key={row.machinery_entry_id || `mch-${index}`}>
+                <div className="field">
+                  <label htmlFor={`mch-name-${index}`}>Equipment</label>
+                  <input
+                    id={`mch-name-${index}`}
+                    value={row.equipment_name || ""}
+                    disabled={readOnly || busy}
+                    onChange={(e) => setMachinery(index, { equipment_name: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={`mch-hours-${index}`}>Duration (h)</label>
+                  <input
+                    id={`mch-hours-${index}`}
+                    type="number"
+                    min="0"
+                    step="0.25"
+                    value={row.duration_hours ?? ""}
+                    disabled={readOnly || busy}
+                    onChange={(e) =>
+                      setMachinery(index, {
+                        duration_hours: e.target.value === "" ? "" : Number(e.target.value),
+                      })
+                    }
+                  />
+                </div>
+                {!readOnly ? (
+                  <div className="row-actions">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={!!row.billable}
+                        disabled={busy}
+                        onChange={(e) => setMachinery(index, { billable: e.target.checked })}
+                      />{" "}
+                      Billable
+                    </label>
+                    <select
+                      aria-label={`Machinery confirmation ${index + 1}`}
+                      value={row.confirmation_status || ROW_CONFIRMATION.SUGGESTED}
+                      disabled={busy}
+                      onChange={(e) => setMachinery(index, { confirmation_status: e.target.value })}
+                    >
+                      <option value={ROW_CONFIRMATION.SUGGESTED}>Suggested</option>
+                      <option value={ROW_CONFIRMATION.CONFIRMED}>Confirmed</option>
+                      <option value={ROW_CONFIRMATION.EXCLUDED}>Excluded</option>
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          {!readOnly ? (
+            <button
+              className="btn btn-ghost"
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                setForm({
+                  ...form,
+                  machinery_entries: [...form.machinery_entries, emptyMachineryRow()],
+                })
+              }
+            >
+              Add machinery row
+            </button>
+          ) : null}
+
+          <h3>Materials</h3>
+          <div className="completion-table" role="table" aria-label="Material entries">
+            {form.material_entries.map((row, index) => (
+              <div className="completion-row" role="row" key={row.material_entry_id || `mat-${index}`}>
+                <div className="field">
+                  <label htmlFor={`mat-name-${index}`}>Item</label>
+                  <input
+                    id={`mat-name-${index}`}
+                    value={row.item_name || ""}
+                    disabled={readOnly || busy}
+                    onChange={(e) => setMaterial(index, { item_name: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={`mat-qty-${index}`}>Qty</label>
+                  <input
+                    id={`mat-qty-${index}`}
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={row.quantity ?? ""}
+                    disabled={readOnly || busy}
+                    onChange={(e) =>
+                      setMaterial(index, {
+                        quantity: e.target.value === "" ? "" : Number(e.target.value),
+                      })
+                    }
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={`mat-unit-${index}`}>Unit</label>
+                  <input
+                    id={`mat-unit-${index}`}
+                    value={row.unit || ""}
+                    disabled={readOnly || busy}
+                    onChange={(e) => setMaterial(index, { unit: e.target.value })}
+                  />
+                </div>
+                {!readOnly ? (
+                  <div className="row-actions">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={!!row.billable}
+                        disabled={busy}
+                        onChange={(e) => setMaterial(index, { billable: e.target.checked })}
+                      />{" "}
+                      Billable
+                    </label>
+                    <select
+                      aria-label={`Material confirmation ${index + 1}`}
+                      value={row.confirmation_status || ROW_CONFIRMATION.SUGGESTED}
+                      disabled={busy}
+                      onChange={(e) => setMaterial(index, { confirmation_status: e.target.value })}
+                    >
+                      <option value={ROW_CONFIRMATION.SUGGESTED}>Suggested</option>
+                      <option value={ROW_CONFIRMATION.CONFIRMED}>Confirmed</option>
+                      <option value={ROW_CONFIRMATION.EXCLUDED}>Excluded</option>
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          {!readOnly ? (
+            <button
+              className="btn btn-ghost"
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                setForm({
+                  ...form,
+                  material_entries: [...form.material_entries, emptyMaterialRow()],
+                })
+              }
+            >
+              Add material row
+            </button>
+          ) : null}
+
+          {manager ? (
+            <div className="row-actions" style={{ marginTop: 16 }}>
+              {payload?.can_generate && editable ? (
+                <button className="btn btn-ghost" type="button" disabled={busy} onClick={generateDraft}>
+                  Regenerate AI draft
+                </button>
+              ) : null}
+              {editable ? (
+                <>
+                  <button className="btn" type="button" disabled={busy} onClick={() => saveDraft()}>
+                    Save draft
+                  </button>
+                  <button className="btn btn-ghost" type="button" disabled={busy} onClick={markReady}>
+                    Mark ready for final review
+                  </button>
+                </>
+              ) : null}
+              {payload?.can_finalise ? (
+                <button className="btn" type="button" disabled={busy} onClick={finalise}>
+                  Finalise
+                </button>
+              ) : null}
+              {payload?.can_reopen ? (
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setShowReopen(true)}
+                >
+                  Reopen
+                </button>
+              ) : null}
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={busy}
+                onClick={() => load().catch((err) => setError(String(err.message || err)))}
+              >
+                Refresh
+              </button>
+            </div>
+          ) : (
+            <p className="small muted">Staff view is read-only for your labour allocation.</p>
+          )}
+
+          {showReopen ? (
+            <div className="field" style={{ marginTop: 12 }}>
+              <label htmlFor="reopen-reason">Reopen reason</label>
+              <textarea
+                id="reopen-reason"
+                rows={2}
+                value={reopenReason}
+                onChange={(e) => setReopenReason(e.target.value)}
+              />
+              <div className="row-actions">
+                <button className="btn" type="button" disabled={busy} onClick={reopen}>
+                  Confirm reopen
+                </button>
+                <button className="btn btn-ghost" type="button" onClick={() => setShowReopen(false)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {completion.finalised_by ? (
+            <p className="small muted">
+              Finalised by {completion.finalised_by} at {completion.finalised_at}
+            </p>
+          ) : null}
+          {completion.reopened_by ? (
+            <p className="small muted">
+              Reopened by {completion.reopened_by}: {completion.reopen_reason}
+            </p>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}

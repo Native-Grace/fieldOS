@@ -8,15 +8,25 @@ from app.core.roles import actor_identity, is_manager_or_admin, normalize_role, 
 from app.core.security import create_access_token, get_current_claims
 from app.models.schemas import (
     ApproveJobRequest,
+    CompletionFinaliseRequest,
+    CompletionGenerateRequest,
+    CompletionListResponse,
+    CompletionReopenRequest,
+    CompletionUpdateRequest,
     HealthResponse,
     InvalidateRecordingRequest,
+    JobCompletionOut,
+    JobCompletionResponse,
     JobDetailResponse,
     JobListResponse,
     JobReviewFields,
     JobReviewResponse,
     JobSummary,
+    LabourEntry,
     LoginRequest,
     LoginResponse,
+    MachineryEntry,
+    MaterialEntry,
     ProcessRequest,
     ProcessResponse,
     ReadyResponse,
@@ -427,6 +437,165 @@ async def reopen_job(
         service=service,
         body=_review_body(body),
     )
+
+
+def _completion_response(result: dict, settings: Settings, service: JobService) -> JobCompletionResponse:
+    completion = result.get("completion")
+    return JobCompletionResponse(
+        completion=JobCompletionOut.model_validate(completion) if completion else None,
+        labour_entries=[LabourEntry.model_validate(row) for row in (result.get("labour_entries") or [])],
+        machinery_entries=[
+            MachineryEntry.model_validate(row) for row in (result.get("machinery_entries") or [])
+        ],
+        material_entries=[
+            MaterialEntry.model_validate(row) for row in (result.get("material_entries") or [])
+        ],
+        can_edit=bool(result.get("can_edit")),
+        can_finalise=bool(result.get("can_finalise")),
+        can_reopen=bool(result.get("can_reopen")),
+        can_generate=bool(result.get("can_generate")),
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/completions", response_model=CompletionListResponse)
+async def list_completions(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> CompletionListResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.list_completions(str(claims["sub"]), role)
+    from app.models.schemas import CompletionListItem
+
+    return CompletionListResponse(
+        items=[CompletionListItem.model_validate(item) for item in (result.get("items") or [])],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/jobs/{job_sheet_id}/completion", response_model=JobCompletionResponse)
+async def get_job_completion(
+    job_sheet_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobCompletionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    result = await service.get_completion(job_sheet_id, str(claims["sub"]), role)
+    return _completion_response(result, settings, service)
+
+
+@router.post("/jobs/{job_sheet_id}/completion", response_model=JobCompletionResponse)
+async def create_job_completion(
+    job_sheet_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobCompletionResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.completion_action(
+        "create_job_completion_draft",
+        job_sheet_id=job_sheet_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body={},
+    )
+    return _completion_response(result, settings, service)
+
+
+@router.post("/jobs/{job_sheet_id}/completion/generate", response_model=JobCompletionResponse)
+async def generate_job_completion(
+    job_sheet_id: str,
+    body: CompletionGenerateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobCompletionResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.completion_action(
+        "generate_job_completion_draft",
+        job_sheet_id=job_sheet_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=body.model_dump(exclude_none=True),
+    )
+    return _completion_response(result, settings, service)
+
+
+@router.patch("/jobs/{job_sheet_id}/completion", response_model=JobCompletionResponse)
+async def patch_job_completion(
+    job_sheet_id: str,
+    body: CompletionUpdateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobCompletionResponse:
+    role = require_manager_or_admin(claims)
+    payload = body.model_dump(exclude_none=True)
+    if body.labour_entries is not None:
+        payload["labour_entries"] = [row.model_dump(exclude_none=True) for row in body.labour_entries]
+    if body.machinery_entries is not None:
+        payload["machinery_entries"] = [
+            row.model_dump(exclude_none=True) for row in body.machinery_entries
+        ]
+    if body.material_entries is not None:
+        payload["material_entries"] = [
+            row.model_dump(exclude_none=True) for row in body.material_entries
+        ]
+    result = await service.completion_action(
+        "update_job_completion",
+        job_sheet_id=job_sheet_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=payload,
+    )
+    return _completion_response(result, settings, service)
+
+
+@router.post("/jobs/{job_sheet_id}/completion/finalise", response_model=JobCompletionResponse)
+async def finalise_job_completion(
+    job_sheet_id: str,
+    body: CompletionFinaliseRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobCompletionResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.completion_action(
+        "finalise_job_completion",
+        job_sheet_id=job_sheet_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=body.model_dump(exclude_none=True),
+    )
+    return _completion_response(result, settings, service)
+
+
+@router.post("/jobs/{job_sheet_id}/completion/reopen", response_model=JobCompletionResponse)
+async def reopen_job_completion(
+    job_sheet_id: str,
+    body: CompletionReopenRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobCompletionResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.completion_action(
+        "reopen_job_completion",
+        job_sheet_id=job_sheet_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=body.model_dump(exclude_none=True),
+    )
+    return _completion_response(result, settings, service)
 
 
 @router.get("/jobs/{job_sheet_id}/recordings", response_model=list[RecordingOut])
