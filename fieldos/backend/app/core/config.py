@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     demo_staff_password: str = Field(default="FieldOS-Demo-2026!", alias="DEMO_STAFF_PASSWORD")
     demo_staff_id: str = Field(default="STAFF-DEMO001", alias="DEMO_STAFF_ID")
     demo_staff_name: str = Field(default="Alex Technician", alias="DEMO_STAFF_NAME")
+    demo_staff_role: str = Field(default="Field Staff", alias="DEMO_STAFF_ROLE")
+
+    # Optional second demo user for manager review (local / apps_script testing).
+    demo_manager_email: str = Field(default="manager@nativegrace.com", alias="DEMO_MANAGER_EMAIL")
+    demo_manager_password: str = Field(default="FieldOS-Manager-2026!", alias="DEMO_MANAGER_PASSWORD")
+    demo_manager_id: str = Field(default="STAFF-MGR001", alias="DEMO_MANAGER_ID")
+    demo_manager_name: str = Field(default="Morgan Manager", alias="DEMO_MANAGER_NAME")
+    demo_manager_enabled: bool = Field(default=True, alias="DEMO_MANAGER_ENABLED")
 
     # Live tbl_job_sheets column mappings (customer_name is API display only; dual-read via projects/customers)
     job_assignment_column: str = Field(default="staff_id", alias="JOB_ASSIGNMENT_COLUMN")

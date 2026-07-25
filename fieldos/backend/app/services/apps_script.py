@@ -197,15 +197,63 @@ class AppsScriptClient:
             {"staff_id": staff_id, "days": days, **self._column_payload()},
         )
 
-    async def get_job_detail(self, job_sheet_id: str, staff_id: str) -> dict[str, Any]:
+    async def list_jobs_for_review(
+        self,
+        *,
+        staff_id: str,
+        actor_role: str,
+        days: int,
+        processing_status: str | None = None,
+        approval_status: str | None = None,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._post(
+            "list_jobs_for_review",
+            {
+                "staff_id": staff_id,
+                "actor_role": actor_role,
+                "days": days,
+                "processing_status": processing_status or "",
+                "approval_status": approval_status or "",
+                "search": search or "",
+                **self._column_payload(),
+            },
+        )
+
+    async def get_job_detail(
+        self,
+        job_sheet_id: str,
+        staff_id: str,
+        *,
+        actor_role: str = "staff",
+        include_transcript: bool = False,
+    ) -> dict[str, Any]:
         return await self._post(
             "get_job_detail",
             {
                 "job_sheet_id": job_sheet_id,
                 "staff_id": staff_id,
+                "actor_role": actor_role,
+                "include_transcript": include_transcript,
                 **self._column_payload(),
             },
         )
+
+    async def update_job_review(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("update_job_review", {**safe_body, **self._column_payload()})
+
+    async def approve_job_sheet(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("approve_job_sheet", {**safe_body, **self._column_payload()})
+
+    async def return_job_sheet(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("return_job_sheet", {**safe_body, **self._column_payload()})
+
+    async def reopen_job_sheet(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("reopen_job_sheet", {**safe_body, **self._column_payload()})
 
     async def register_recording(self, body: dict[str, Any]) -> dict[str, Any]:
         safe_body = redact_secrets(body)

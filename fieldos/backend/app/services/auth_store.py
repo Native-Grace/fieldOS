@@ -30,35 +30,63 @@ class AuthUserStore:
 
     def _ensure_demo_user(self) -> None:
         users = self._load()
-        email = self.settings.demo_staff_email.lower()
+        users = self._upsert_demo(
+            users,
+            email=self.settings.demo_staff_email.lower(),
+            staff_id=self.settings.demo_staff_id,
+            staff_name=self.settings.demo_staff_name,
+            role=self.settings.demo_staff_role,
+            password=self.settings.demo_staff_password,
+        )
+        if self.settings.demo_manager_enabled:
+            users = self._upsert_demo(
+                users,
+                email=self.settings.demo_manager_email.lower(),
+                staff_id=self.settings.demo_manager_id,
+                staff_name=self.settings.demo_manager_name,
+                role="Manager",
+                password=self.settings.demo_manager_password,
+            )
+        self._save(users)
+
+    def _upsert_demo(
+        self,
+        users: list[dict[str, Any]],
+        *,
+        email: str,
+        staff_id: str,
+        staff_name: str,
+        role: str,
+        password: str,
+    ) -> list[dict[str, Any]]:
         for user in users:
             if user.get("email", "").lower() != email:
                 continue
-            # Resync demo identity from env so DEMO_STAFF_ID changes take effect
-            # without deleting the Docker volume auth file.
             changed = False
-            if str(user.get("staff_id")) != str(self.settings.demo_staff_id):
-                user["staff_id"] = self.settings.demo_staff_id
+            if str(user.get("staff_id")) != str(staff_id):
+                user["staff_id"] = staff_id
                 changed = True
-            if str(user.get("staff_name") or "") != str(self.settings.demo_staff_name):
-                user["staff_name"] = self.settings.demo_staff_name
+            if str(user.get("staff_name") or "") != str(staff_name):
+                user["staff_name"] = staff_name
+                changed = True
+            if str(user.get("role") or "") != str(role):
+                user["role"] = role
                 changed = True
             if changed:
-                self._save(users)
-                log_extra(logger, 20, "Updated demo auth user identity", email=email)
-            return
+                log_extra(logger, 20, "Updated demo auth user identity", email=email, role=role)
+            return users
         users.append(
             {
-                "staff_id": self.settings.demo_staff_id,
-                "staff_name": self.settings.demo_staff_name,
+                "staff_id": staff_id,
+                "staff_name": staff_name,
                 "email": email,
-                "role": "Field Staff",
+                "role": role,
                 "is_active": True,
-                "password_hash": hash_password(self.settings.demo_staff_password),
+                "password_hash": hash_password(password),
             }
         )
-        self._save(users)
-        log_extra(logger, 20, "Seeded demo auth user", email=email)
+        log_extra(logger, 20, "Seeded demo auth user", email=email, role=role)
+        return users
 
     def authenticate(self, email: str, password: str) -> dict[str, Any] | None:
         email_l = email.lower().strip()

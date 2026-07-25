@@ -97,15 +97,107 @@ class JobService:
             jobs = self.repo.list_jobs_for_staff(staff_id, self._since(day_count), day_count)
         return jobs, day_count
 
-    async def get_job_for_staff(self, job_sheet_id: str, staff_id: str) -> dict[str, Any]:
+    async def list_reviewable(
+        self,
+        *,
+        staff_id: str,
+        actor_role: str,
+        days: int | None = None,
+        processing_status: str | None = None,
+        approval_status: str | None = None,
+        search: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        from app.core.roles import is_manager_or_admin
+
+        if not is_manager_or_admin(actor_role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Manager or admin role required.",
+            )
+        day_count = self._day_count(days)
         if isinstance(self.repo, AppsScriptJobRepository):
-            return await self.repo.aget_job_for_staff(job_sheet_id, staff_id)
+            jobs = await self.repo.alist_jobs_for_review(
+                staff_id=staff_id,
+                actor_role=actor_role,
+                days=day_count,
+                processing_status=processing_status,
+                approval_status=approval_status,
+                search=search,
+            )
+        else:
+            jobs = self.repo.list_jobs_for_review(
+                self._since(day_count),
+                processing_status=processing_status,
+                approval_status=approval_status,
+                search=search,
+            )
+        return jobs, day_count
+
+    async def get_job_for_staff(
+        self,
+        job_sheet_id: str,
+        staff_id: str,
+        *,
+        actor_role: str = "staff",
+        include_transcript: bool = False,
+    ) -> dict[str, Any]:
+        if isinstance(self.repo, AppsScriptJobRepository):
+            return await self.repo.aget_job_for_staff(
+                job_sheet_id,
+                staff_id,
+                actor_role=actor_role,
+                include_transcript=include_transcript,
+            )
+        if hasattr(self.repo, "get_job_for_review"):
+            return self.repo.get_job_for_review(job_sheet_id, staff_id, actor_role)
         return self.repo.get_job_for_staff(job_sheet_id, staff_id)
 
-    async def list_recordings(self, job_sheet_id: str, staff_id: str) -> list[dict[str, Any]]:
+    async def list_recordings(
+        self,
+        job_sheet_id: str,
+        staff_id: str,
+        *,
+        actor_role: str = "staff",
+    ) -> list[dict[str, Any]]:
         if isinstance(self.repo, AppsScriptJobRepository):
-            return await self.repo.alist_recordings(job_sheet_id, staff_id)
+            return await self.repo.alist_recordings(job_sheet_id, staff_id, actor_role=actor_role)
+        if hasattr(self.repo, "get_job_for_review"):
+            self.repo.get_job_for_review(job_sheet_id, staff_id, actor_role)
+            return self.repo.store.list_recordings(job_sheet_id)
         return self.repo.list_recordings(job_sheet_id, staff_id)
+
+    async def review_action(
+        self,
+        action: str,
+        *,
+        job_sheet_id: str,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            **body,
+            "job_sheet_id": job_sheet_id,
+            "staff_id": staff_id,
+            "actor_staff_id": staff_id,
+            "actor_role": actor_role,
+            "actor_identity": actor_identity,
+        }
+        # Never forward raw transcript through review mutations.
+        payload.pop("ai_transcript", None)
+        result = await self.repo.areview_action(action, payload)
+        log_extra(
+            logger,
+            20,
+            "Job review action",
+            action=action,
+            job_sheet_id=job_sheet_id,
+            staff_id=staff_id,
+            actor_role=actor_role,
+            return_reason_present=bool(str(body.get("return_reason") or "").strip()),
+        )
+        return result
 
     async def save_recording(
         self,

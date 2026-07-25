@@ -5,7 +5,8 @@ import {
   DEFAULT_JOBS_DAYS,
   JOBS_RANGE_OPTIONS,
   emptyJobsMessage,
-  fetchMyJobs,
+  fetchJobsForRole,
+  isManagerRole,
   loadJobsDays,
   normalizeJobsDays,
   saveJobsDays,
@@ -26,6 +27,7 @@ function initialDays() {
 
 export default function JobsPage() {
   const staff = getStaff();
+  const manager = isManagerRole(staff?.role);
   const [items, setItems] = useState([]);
   const [days, setDays] = useState(initialDays);
   const [error, setError] = useState("");
@@ -38,7 +40,7 @@ export default function JobsPage() {
       setLoading(true);
       setError("");
       try {
-        const data = await fetchMyJobs({ days, api });
+        const data = await fetchJobsForRole({ days, role: staff?.role, api });
         if (cancelled) return;
         setItems(data.items);
         setAssumptions(data.assumptions);
@@ -71,7 +73,7 @@ export default function JobsPage() {
     <div>
       <div className="topbar">
         <div>
-          <h1>My Jobs</h1>
+          <h1>{manager ? "Review Jobs" : "My Jobs"}</h1>
           <p className="small muted" style={{ margin: 0 }}>
             {staff?.staff_name} · last {days} days
           </p>
@@ -112,7 +114,9 @@ export default function JobsPage() {
       {error && <div className="error-box">{error}</div>}
       {loading && <p className="muted">Loading jobs…</p>}
       {!loading && !error && items.length === 0 && (
-        <div className="card">{emptyJobsMessage(days)}</div>
+        <div className="card">
+          {manager ? `No reviewable jobs in the last ${days} days.` : emptyJobsMessage(days)}
+        </div>
       )}
 
       {!loading &&
@@ -126,6 +130,9 @@ export default function JobsPage() {
               <span>{job.job_date || "—"}</span>
               <span className={statusClass(job.processing_status)}>
                 {job.processing_status || "Draft"}
+              </span>
+              <span className={statusClass(job.approval_status)}>
+                {job.approval_status || "Not reviewed"}
               </span>
             </div>
           </Link>

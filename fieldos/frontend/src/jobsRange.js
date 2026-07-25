@@ -60,6 +60,20 @@ export function jobsMinePath(days) {
   return `/jobs/mine?days=${d}`;
 }
 
+export function jobsReviewPath(days, filters = {}) {
+  const params = new URLSearchParams({ days: String(normalizeJobsDays(days)) });
+  for (const key of ["processing_status", "approval_status", "search"]) {
+    const value = String(filters[key] || "").trim();
+    if (value) params.set(key, value);
+  }
+  return `/jobs?${params.toString()}`;
+}
+
+export function isManagerRole(role) {
+  const normalized = String(role || "").trim().toLowerCase();
+  return normalized === "manager" || normalized === "admin" || normalized === "administrator";
+}
+
 /**
  * @param {number} days
  * @returns {string}
@@ -79,6 +93,22 @@ export async function fetchMyJobs({ days, api }) {
   }
   const selected = normalizeJobsDays(days);
   const data = await api(jobsMinePath(selected));
+  return {
+    items: (data && data.items) || [],
+    days: normalizeJobsDays(data && data.days != null ? data.days : selected),
+    assumptions: (data && data.assumptions) || [],
+  };
+}
+
+export async function fetchJobsForRole({ days, role, api, filters = {} }) {
+  if (typeof api !== "function") {
+    throw new Error("api client is required");
+  }
+  if (!isManagerRole(role)) {
+    return fetchMyJobs({ days, api });
+  }
+  const selected = normalizeJobsDays(days);
+  const data = await api(jobsReviewPath(selected, filters));
   return {
     items: (data && data.items) || [],
     days: normalizeJobsDays(data && data.days != null ? data.days : selected),

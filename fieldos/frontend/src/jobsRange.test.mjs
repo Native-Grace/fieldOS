@@ -3,16 +3,24 @@
  * Run: node --test fieldos/frontend/src/jobsRange.test.mjs
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_JOBS_DAYS,
   emptyJobsMessage,
+  fetchJobsForRole,
   fetchMyJobs,
+  isManagerRole,
   jobsMinePath,
+  jobsReviewPath,
   loadJobsDays,
   normalizeJobsDays,
   saveJobsDays,
 } from "./jobsRange.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function memoryStorage(seed = {}) {
   const map = new Map(Object.entries(seed));
@@ -67,6 +75,54 @@ test("fetchMyJobs selecting 30 days requests days=30", async () => {
   assert.deepEqual(calls, ["/jobs/mine?days=30"]);
   assert.equal(result.items.length, 0);
   assert.equal(emptyJobsMessage(result.days), "No jobs in the last 30 days.");
+});
+
+test("manager uses all-jobs request", async () => {
+  const calls = [];
+  const result = await fetchJobsForRole({
+    days: 30,
+    role: "Manager",
+    api: async (requestPath) => {
+      calls.push(requestPath);
+      return { items: [{ job_sheet_id: "21759f5d" }], days: 30, assumptions: [] };
+    },
+  });
+  assert.deepEqual(calls, ["/jobs?days=30"]);
+  assert.equal(result.items[0].job_sheet_id, "21759f5d");
+  assert.equal(isManagerRole("Manager"), true);
+});
+
+test("admin all-jobs path includes optional filters", () => {
+  assert.equal(
+    jobsReviewPath(7, {
+      processing_status: "Completed",
+      approval_status: "Pending Review",
+      search: "Dykes",
+    }),
+    "/jobs?days=7&processing_status=Completed&approval_status=Pending+Review&search=Dykes"
+  );
+  assert.equal(isManagerRole("Admin"), true);
+});
+
+test("staff uses mine request", async () => {
+  const calls = [];
+  await fetchJobsForRole({
+    days: 7,
+    role: "Field Staff",
+    api: async (requestPath) => {
+      calls.push(requestPath);
+      return { items: [], days: 7, assumptions: [] };
+    },
+  });
+  assert.deepEqual(calls, ["/jobs/mine?days=7"]);
+});
+
+test("manager job cards render processing and approval badges", () => {
+  const source = fs.readFileSync(path.join(__dirname, "pages", "JobsPage.jsx"), "utf8");
+  assert.match(source, /Review Jobs/);
+  assert.ok(source.includes("job.processing_status"));
+  assert.ok(source.includes("job.approval_status"));
+  assert.ok(source.includes('to={`/jobs/${job.job_sheet_id}`}'));
 });
 
 test("API failure handling propagates error message", async () => {

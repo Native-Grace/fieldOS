@@ -1,6 +1,14 @@
 const TOKEN_KEY = "fieldos_token";
 const STAFF_KEY = "fieldos_staff";
 
+export class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -43,7 +51,7 @@ export async function api(path, options = {}) {
     clearSession();
   }
   if (!res.ok) {
-    throw new Error(await parseError(res));
+    throw new ApiError(await parseError(res), res.status);
   }
   if (res.status === 204) return null;
   return res.json();

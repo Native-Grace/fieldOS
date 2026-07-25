@@ -285,3 +285,42 @@ audio {
 
 .muted { color: var(--muted); }
 .small { font-size: 0.82rem; }
+
+.field textarea {
+  border: 1px solid #c5d2c8;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
+  min-height: 72px;
+  resize: vertical;
+}
+
+.transcript-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #eef4f0;
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 0.85rem;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.row.gap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.row.gap button {
+  width: auto;
+}
+
+.ok { color: var(--ok); font-size: 0.9rem; }
+.error { color: var(--danger); font-size: 0.9rem; }
+.card.nested { margin-top: 12px; box-shadow: none; border: 1px solid #c5d2c8; }
+
+@media (min-width: 720px) {
+  .app-shell { max-width: 720px; }
+}

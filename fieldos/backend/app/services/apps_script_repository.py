@@ -25,15 +25,21 @@ def _raise_from_apps(exc: AppsScriptError) -> None:
     message = str(exc) or "Apps Script error"
     lower = message.lower()
     if code == 403 or "forbidden" in lower:
+        if "manager" in lower or "admin" in lower:
+            raise HTTPException(status_code=403, detail="Manager or admin role required.") from exc
         raise HTTPException(status_code=403, detail="Job is not assigned to this staff member") from exc
     if code == 404 or "not found" in lower:
         detail = "Recording not found for this job." if "recording" in lower else "Job sheet not found"
         raise HTTPException(status_code=404, detail=detail) from exc
-    if code == 409 or "processing" in lower:
+    if "conflict" in lower or "changed since you loaded" in lower:
+        raise HTTPException(status_code=409, detail=message) from exc
+    if code == 409 or ("processing" in lower and "cannot change recordings" in lower):
         raise HTTPException(
             status_code=409,
             detail="Cannot change recordings while the job is Processing.",
         ) from exc
+    if "return_reason" in lower or "requires processing_status" in lower or "explicit reopen" in lower:
+        raise HTTPException(status_code=400, detail=message) from exc
     if code == 504:
         raise HTTPException(status_code=504, detail="Apps Script request timed out") from exc
     if code == 503:
@@ -42,6 +48,8 @@ def _raise_from_apps(exc: AppsScriptError) -> None:
     safe = message
     if "drive" in lower and ("file" in lower or "cleanup" in lower):
         safe = "Could not delete recording file from Drive. Recording was not removed."
+    if "transcript" in lower:
+        safe = "Upstream review request failed."
     raise HTTPException(status_code=502, detail=safe) from exc
 
 
@@ -98,9 +106,49 @@ class AppsScriptJobRepository:
             raise HTTPException(status_code=502, detail="Apps Script returned no jobs list")
         return [self._job_row(j) for j in jobs if isinstance(j, dict)]
 
-    async def aget_job_for_staff(self, job_sheet_id: str, staff_id: str) -> dict[str, Any]:
+    async def alist_jobs_for_review(
+        self,
+        *,
+        staff_id: str,
+        actor_role: str,
+        days: int,
+        processing_status: str | None = None,
+        approval_status: str | None = None,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
         try:
-            result = await self.apps_script.get_job_detail(job_sheet_id, staff_id)
+            result = await self.apps_script.list_jobs_for_review(
+                staff_id=staff_id,
+                actor_role=actor_role,
+                days=days,
+                processing_status=processing_status,
+                approval_status=approval_status,
+                search=search,
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") or {}
+        jobs = data.get("jobs")
+        if not isinstance(jobs, list):
+            raise HTTPException(status_code=502, detail="Apps Script returned no review jobs list")
+        return [self._job_row(j) for j in jobs if isinstance(j, dict)]
+
+    async def aget_job_for_staff(
+        self,
+        job_sheet_id: str,
+        staff_id: str,
+        *,
+        actor_role: str = "staff",
+        include_transcript: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.get_job_detail(
+                job_sheet_id,
+                staff_id,
+                actor_role=actor_role,
+                include_transcript=include_transcript,
+            )
         except AppsScriptError as exc:
             _raise_from_apps(exc)
             raise
@@ -110,9 +158,20 @@ class AppsScriptJobRepository:
             raise HTTPException(status_code=502, detail="Apps Script returned no job")
         return self._job_row(job)
 
-    async def alist_recordings(self, job_sheet_id: str, staff_id: str) -> list[dict[str, Any]]:
+    async def alist_recordings(
+        self,
+        job_sheet_id: str,
+        staff_id: str,
+        *,
+        actor_role: str = "staff",
+    ) -> list[dict[str, Any]]:
         try:
-            result = await self.apps_script.get_job_detail(job_sheet_id, staff_id)
+            result = await self.apps_script.get_job_detail(
+                job_sheet_id,
+                staff_id,
+                actor_role=actor_role,
+                include_transcript=False,
+            )
         except AppsScriptError as exc:
             _raise_from_apps(exc)
             raise
@@ -121,6 +180,28 @@ class AppsScriptJobRepository:
         if not isinstance(recordings, list):
             raise HTTPException(status_code=502, detail="Apps Script returned invalid recordings")
         return [r for r in recordings if isinstance(r, dict)]
+
+    async def areview_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if action == "update_job_review":
+                result = await self.apps_script.update_job_review(body)
+            elif action == "approve_job_sheet":
+                result = await self.apps_script.approve_job_sheet(body)
+            elif action == "return_job_sheet":
+                result = await self.apps_script.return_job_sheet(body)
+            elif action == "reopen_job_sheet":
+                result = await self.apps_script.reopen_job_sheet(body)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown review action: {action}")
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") or {}
+        job = data.get("job")
+        if not isinstance(job, dict):
+            raise HTTPException(status_code=502, detail="Apps Script returned no job")
+        warnings = data.get("warnings") if isinstance(data.get("warnings"), list) else []
+        return {"job": self._job_row(job), "warnings": [str(w) for w in warnings]}
 
     async def register_recording_remote(
         self,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, uploadRecording } from "../api";
+import ManagerReviewPanel from "../components/ManagerReviewPanel";
 import {
   ACCEPT_ATTR,
   buildFilePreview,
@@ -222,6 +223,8 @@ export default function JobDetailPage() {
         </button>
         {processMsg && <p className="status-line">{processMsg}</p>}
       </div>
+
+      <ManagerReviewPanel jobSheetId={job.job_sheet_id} onUpdated={() => load()} />
 
       <div className="card">
         <h2 style={{ marginTop: 0, fontSize: "1.05rem" }}>Upload audio file</h2>

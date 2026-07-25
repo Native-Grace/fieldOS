@@ -41,6 +41,73 @@ class JobSummary(BaseModel):
     processing_error: str = ""
 
 
+class JobReviewFields(BaseModel):
+    """Manager review payload (ai_transcript optional / authorised)."""
+
+    job_sheet_id: str
+    job_date: Optional[date] = None
+    project_name: str = ""
+    customer_name: str = ""
+    processing_status: str = ""
+    approval_status: str = ""
+    processing_error: str = ""
+    processing_started_at: Optional[Union[datetime, str]] = None
+    processing_completed_at: Optional[Union[datetime, str]] = None
+    assigned_staff_id: str = ""
+    ai_summary: str = ""
+    client_requests: str = ""
+    variations: str = ""
+    safety_issues: str = ""
+    manager_review_items: str = ""
+    weather: str = ""
+    travel_time: str = ""
+    ai_confidence_score: Optional[float] = None
+    manager_notes: str = ""
+    approved_by: str = ""
+    approved_at: Optional[Union[datetime, str]] = None
+    returned_by: str = ""
+    returned_at: Optional[Union[datetime, str]] = None
+    return_reason: str = ""
+    ai_transcript_character_count: int = 0
+    ai_transcript: Optional[str] = None
+
+
+class JobReviewResponse(BaseModel):
+    job: JobReviewFields
+    recordings: List[RecordingOut]
+    data_mode: str
+    assumptions: List[str]
+    warnings: List[str] = Field(default_factory=list)
+    can_edit: bool = False
+    can_approve: bool = False
+
+
+class ReviewEditRequest(BaseModel):
+    ai_summary: Optional[str] = None
+    client_requests: Optional[str] = None
+    variations: Optional[str] = None
+    safety_issues: Optional[str] = None
+    manager_review_items: Optional[str] = None
+    weather: Optional[str] = None
+    travel_time: Optional[str] = None
+    manager_notes: Optional[str] = None
+    expected_approval_status: Optional[str] = None
+    expected_processing_completed_at: Optional[str] = None
+
+
+class ApproveJobRequest(ReviewEditRequest):
+    pass
+
+
+class ReturnJobRequest(ReviewEditRequest):
+    return_reason: str = Field(min_length=1, max_length=500)
+
+
+class ReopenJobRequest(BaseModel):
+    expected_approval_status: Optional[str] = None
+    expected_processing_completed_at: Optional[str] = None
+
+
 class JobListResponse(BaseModel):
     items: List[JobSummary]
     days: int

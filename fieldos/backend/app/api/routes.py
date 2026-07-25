@@ -1,15 +1,19 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.core.config import Settings, get_settings
+from app.core.roles import actor_identity, is_manager_or_admin, normalize_role, require_manager_or_admin
 from app.core.security import create_access_token, get_current_claims
 from app.models.schemas import (
+    ApproveJobRequest,
     HealthResponse,
     InvalidateRecordingRequest,
     JobDetailResponse,
     JobListResponse,
+    JobReviewFields,
+    JobReviewResponse,
     JobSummary,
     LoginRequest,
     LoginResponse,
@@ -19,12 +23,13 @@ from app.models.schemas import (
     RecordingMutationResponse,
     RecordingOut,
     RecordingUploadResponse,
+    ReopenJobRequest,
+    ReturnJobRequest,
+    ReviewEditRequest,
     StaffOut,
 )
 from app.services.auth_store import AuthUserStore
 from app.services.jobs import JobService
-from datetime import datetime, timezone
-from fastapi import HTTPException, status
 
 router = APIRouter(prefix="/api/v1")
 
@@ -61,6 +66,54 @@ def _job_summary(job: dict, settings: Settings) -> JobSummary:
         approval_status=str(job.get("approval_status", "") or ""),
         processing_error=str(job.get("processing_error", "") or ""),
     )
+
+
+def _confidence(value) -> Optional[float]:
+
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _job_review_fields(job: dict, settings: Settings, *, include_transcript: bool) -> JobReviewFields:
+    summary = _job_summary(job, settings)
+    transcript = str(job.get("ai_transcript") or "")
+    return JobReviewFields(
+        job_sheet_id=summary.job_sheet_id,
+        job_date=summary.job_date,
+        project_name=summary.project_name,
+        customer_name=summary.customer_name,
+        processing_status=summary.processing_status,
+        approval_status=summary.approval_status,
+        processing_error=summary.processing_error,
+        processing_started_at=job.get("processing_started_at"),
+        processing_completed_at=job.get("processing_completed_at"),
+        assigned_staff_id=str(job.get("assigned_staff_id") or job.get(settings.job_assignment_column) or ""),
+        ai_summary=str(job.get("ai_summary") or ""),
+        client_requests=str(job.get("client_requests") or ""),
+        variations=str(job.get("variations") or ""),
+        safety_issues=str(job.get("safety_issues") or ""),
+        manager_review_items=str(job.get("manager_review_items") or ""),
+        weather=str(job.get("weather") or ""),
+        travel_time=str(job.get("travel_time") or ""),
+        ai_confidence_score=_confidence(job.get("ai_confidence_score")),
+        manager_notes=str(job.get("manager_notes") or ""),
+        approved_by=str(job.get("approved_by") or ""),
+        approved_at=job.get("approved_at"),
+        returned_by=str(job.get("returned_by") or ""),
+        returned_at=job.get("returned_at"),
+        return_reason=str(job.get("return_reason") or ""),
+        ai_transcript_character_count=int(job.get("ai_transcript_character_count") or len(transcript)),
+        ai_transcript=transcript if include_transcript else None,
+    )
+
+
+def _review_body(model) -> dict:
+    data = model.model_dump(exclude_none=True)
+    return data
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -170,6 +223,33 @@ async def jobs_mine(
     )
 
 
+@router.get("/jobs", response_model=JobListResponse)
+async def jobs_for_review(
+    days: Optional[int] = Query(default=None, ge=1, le=90),
+    processing_status: Optional[str] = Query(default=None, max_length=100),
+    approval_status: Optional[str] = Query(default=None, max_length=100),
+    search: Optional[str] = Query(default=None, max_length=200),
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobListResponse:
+    role = require_manager_or_admin(claims)
+    jobs, day_count = await service.list_reviewable(
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        days=days,
+        processing_status=processing_status,
+        approval_status=approval_status,
+        search=search,
+    )
+    return JobListResponse(
+        items=[_job_summary(job, settings) for job in jobs],
+        days=day_count,
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
 @router.get("/jobs/{job_sheet_id}", response_model=JobDetailResponse)
 async def job_detail(
     job_sheet_id: str,
@@ -177,8 +257,18 @@ async def job_detail(
     settings: Settings = Depends(get_settings),
     service: JobService = Depends(job_service),
 ) -> JobDetailResponse:
-    job = await service.get_job_for_staff(job_sheet_id, str(claims["sub"]))
-    recordings = await service.list_recordings(job_sheet_id, str(claims["sub"]))
+    role = normalize_role(str(claims.get("role") or ""))
+    job = await service.get_job_for_staff(
+        job_sheet_id,
+        str(claims["sub"]),
+        actor_role=role,
+        include_transcript=False,
+    )
+    recordings = await service.list_recordings(
+        job_sheet_id,
+        str(claims["sub"]),
+        actor_role=role,
+    )
     return JobDetailResponse(
         job=_job_summary(job, settings),
         recordings=[RecordingOut.model_validate(r) for r in recordings],
@@ -186,6 +276,156 @@ async def job_detail(
         processing_completed_at=job.get("processing_completed_at"),
         data_mode=settings.data_mode,
         assumptions=service.assumptions(),
+    )
+
+
+@router.get("/jobs/{job_sheet_id}/review", response_model=JobReviewResponse)
+async def job_review(
+    job_sheet_id: str,
+    include_transcript: bool = Query(default=False),
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobReviewResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    manager = is_manager_or_admin(role)
+    if include_transcript and not manager:
+        raise HTTPException(status_code=403, detail="Manager or admin role required for transcript.")
+    job = await service.get_job_for_staff(
+        job_sheet_id,
+        str(claims["sub"]),
+        actor_role=role,
+        include_transcript=include_transcript and manager,
+    )
+    # Mock path may still hold transcript on the row — strip for staff.
+    if not manager:
+        job = dict(job)
+        job.pop("ai_transcript", None)
+    recordings = await service.list_recordings(
+        job_sheet_id,
+        str(claims["sub"]),
+        actor_role=role,
+    )
+    if not manager:
+        recordings = [
+            {**r, "recording_drive_file_id": ""} if isinstance(r, dict) else r for r in recordings
+        ]
+    can_edit = manager and str(job.get("approval_status") or "") != "Approved"
+    can_approve = manager and str(job.get("processing_status") or "").strip() == "Completed"
+    return JobReviewResponse(
+        job=_job_review_fields(job, settings, include_transcript=include_transcript and manager),
+        recordings=[RecordingOut.model_validate(r) for r in recordings],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+        can_edit=can_edit,
+        can_approve=can_approve,
+    )
+
+
+async def _review_mutation_response(
+    *,
+    action: str,
+    job_sheet_id: str,
+    claims: dict,
+    settings: Settings,
+    service: JobService,
+    body: dict,
+) -> JobReviewResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.review_action(
+        action,
+        job_sheet_id=job_sheet_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=body,
+    )
+    job = result["job"]
+    recordings = await service.list_recordings(
+        job_sheet_id,
+        str(claims["sub"]),
+        actor_role=role,
+    )
+    return JobReviewResponse(
+        job=_job_review_fields(job, settings, include_transcript=False),
+        recordings=[RecordingOut.model_validate(r) for r in recordings],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+        warnings=list(result.get("warnings") or []),
+        can_edit=str(job.get("approval_status") or "") != "Approved",
+        can_approve=str(job.get("processing_status") or "").strip() == "Completed",
+    )
+
+
+@router.patch("/jobs/{job_sheet_id}/review", response_model=JobReviewResponse)
+async def patch_job_review(
+    job_sheet_id: str,
+    body: ReviewEditRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobReviewResponse:
+    return await _review_mutation_response(
+        action="update_job_review",
+        job_sheet_id=job_sheet_id,
+        claims=claims,
+        settings=settings,
+        service=service,
+        body=_review_body(body),
+    )
+
+
+@router.post("/jobs/{job_sheet_id}/approve", response_model=JobReviewResponse)
+async def approve_job(
+    job_sheet_id: str,
+    body: ApproveJobRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobReviewResponse:
+    return await _review_mutation_response(
+        action="approve_job_sheet",
+        job_sheet_id=job_sheet_id,
+        claims=claims,
+        settings=settings,
+        service=service,
+        body=_review_body(body),
+    )
+
+
+@router.post("/jobs/{job_sheet_id}/return", response_model=JobReviewResponse)
+async def return_job(
+    job_sheet_id: str,
+    body: ReturnJobRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobReviewResponse:
+    return await _review_mutation_response(
+        action="return_job_sheet",
+        job_sheet_id=job_sheet_id,
+        claims=claims,
+        settings=settings,
+        service=service,
+        body=_review_body(body),
+    )
+
+
+@router.post("/jobs/{job_sheet_id}/reopen", response_model=JobReviewResponse)
+async def reopen_job(
+    job_sheet_id: str,
+    body: ReopenJobRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobReviewResponse:
+    return await _review_mutation_response(
+        action="reopen_job_sheet",
+        job_sheet_id=job_sheet_id,
+        claims=claims,
+        settings=settings,
+        service=service,
+        body=_review_body(body),
     )
 
 

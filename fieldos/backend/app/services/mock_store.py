@@ -41,11 +41,26 @@ class MockStore:
                         date_col: d.isoformat(),
                         project_col: f"PROJ-DEMO{i+1:03d}",
                         customer_col: f"Customer {chr(65+i)}",
-                        "processing_status": ["", "Queued", "Processing", "Failed", "Completed"][i % 5],
-                        "approval_status": "Pending Review" if i == 3 else "",
+                        "processing_status": ["Completed", "Queued", "Processing", "Failed", "Completed"][i % 5],
+                        "approval_status": "Pending Review",
                         "processing_error": "Simulated pipeline error for demo." if i == 3 else "",
-                        "processing_started_at": None,
-                        "processing_completed_at": None,
+                        "processing_started_at": None if i != 0 else "2026-07-24T01:00:00+00:00",
+                        "processing_completed_at": None if i != 0 else "2026-07-24T01:05:00+00:00",
+                        "ai_summary": "Demo summary for manager review." if i == 0 else "",
+                        "client_requests": "",
+                        "variations": "",
+                        "safety_issues": "",
+                        "manager_review_items": "Demo review item." if i == 0 else "",
+                        "weather": "",
+                        "travel_time": "",
+                        "ai_confidence_score": 0.8 if i == 0 else None,
+                        "manager_notes": "",
+                        "approved_by": "",
+                        "approved_at": "",
+                        "returned_by": "",
+                        "returned_at": "",
+                        "return_reason": "",
+                        "ai_transcript": "Demo transcript line one.\nDemo transcript line two." if i == 0 else "",
                     }
                 )
             self._write(self.jobs_path, jobs)
@@ -79,6 +94,56 @@ class MockStore:
                 continue
             out.append(job)
         out.sort(key=lambda j: str(j.get(date_col, "")), reverse=True)
+        return out
+
+    def list_jobs_for_review(
+        self,
+        since: date,
+        *,
+        processing_status: str | None = None,
+        approval_status: str | None = None,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
+        date_col = self.settings.job_date_column
+        processing_filter = (processing_status or "").strip().lower()
+        approval_filter = (approval_status or "").strip().lower()
+        search_filter = (search or "").strip().lower()
+        out = []
+        for job in self._read(self.jobs_path):
+            raw_date = job.get(date_col)
+            if not raw_date:
+                continue
+            try:
+                job_date = date.fromisoformat(str(raw_date)[:10])
+            except ValueError:
+                continue
+            if job_date < since:
+                continue
+            if processing_filter and str(job.get("processing_status") or "").strip().lower() != processing_filter:
+                continue
+            if approval_filter and str(job.get("approval_status") or "").strip().lower() != approval_filter:
+                continue
+            if search_filter:
+                haystack = " ".join(
+                    str(job.get(key) or "")
+                    for key in (
+                        "job_sheet_id",
+                        "project_name",
+                        "customer_name",
+                        self.settings.job_project_column,
+                        self.settings.job_customer_column,
+                    )
+                ).lower()
+                if search_filter not in haystack:
+                    continue
+            out.append(job)
+        out.sort(
+            key=lambda job: (
+                str(job.get(date_col) or ""),
+                str(job.get("job_sheet_id") or ""),
+            ),
+            reverse=True,
+        )
         return out
 
     def get_job(self, job_sheet_id: str) -> dict[str, Any] | None:

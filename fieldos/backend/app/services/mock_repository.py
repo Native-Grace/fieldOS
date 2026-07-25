@@ -35,6 +35,21 @@ class MockJobRepository:
         _ = days
         return self.store.list_jobs_for_staff(staff_id, since)
 
+    def list_jobs_for_review(
+        self,
+        since: date,
+        *,
+        processing_status: str | None = None,
+        approval_status: str | None = None,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.store.list_jobs_for_review(
+            since,
+            processing_status=processing_status,
+            approval_status=approval_status,
+            search=search,
+        )
+
     def get_job_for_staff(self, job_sheet_id: str, staff_id: str) -> dict[str, Any]:
         job = self.store.get_job(job_sheet_id)
         if not job:
@@ -197,3 +212,126 @@ class MockJobRepository:
             "recording_status": "Deleted",
             "drive_outcome": "deleted",
         }
+
+    def get_job_for_review(self, job_sheet_id: str, staff_id: str, actor_role: str) -> dict[str, Any]:
+        from app.core.roles import is_manager_or_admin
+
+        job = self.store.get_job(job_sheet_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job sheet not found")
+        if not is_manager_or_admin(actor_role):
+            if str(job.get(self.settings.job_assignment_column, "")) != str(staff_id):
+                raise HTTPException(status_code=403, detail="Job is not assigned to this staff member")
+        return job
+
+    def _check_concurrency(self, job: dict[str, Any], body: dict[str, Any]) -> None:
+        expected_status = body.get("expected_approval_status")
+        if expected_status not in (None, "") and str(job.get("approval_status") or "") != str(expected_status):
+            raise HTTPException(
+                status_code=409,
+                detail="Conflict: approval_status changed since you loaded this review.",
+            )
+        expected_completed = body.get("expected_processing_completed_at")
+        if expected_completed not in (None, ""):
+            live = str(job.get("processing_completed_at") or "")
+            if live != str(expected_completed):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Conflict: processing_completed_at changed since you loaded this review.",
+                )
+
+    def _apply_edits(self, body: dict[str, Any]) -> dict[str, Any]:
+        keys = (
+            "ai_summary",
+            "client_requests",
+            "variations",
+            "safety_issues",
+            "manager_review_items",
+            "weather",
+            "travel_time",
+            "manager_notes",
+        )
+        patch: dict[str, Any] = {}
+        for key in keys:
+            if key in body and body[key] is not None:
+                patch[key] = str(body[key])
+        return patch
+
+    async def areview_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        from app.core.roles import is_manager_or_admin
+
+        job_sheet_id = str(body.get("job_sheet_id") or "")
+        staff_id = str(body.get("staff_id") or body.get("actor_staff_id") or "")
+        actor_role = str(body.get("actor_role") or "staff")
+        if not is_manager_or_admin(actor_role):
+            raise HTTPException(status_code=403, detail="Manager or admin role required.")
+        job = self.get_job_for_review(job_sheet_id, staff_id, actor_role)
+        self._check_concurrency(job, body)
+        edits = self._apply_edits(body)
+        actor = str(body.get("actor_identity") or staff_id)
+        now = datetime.now(timezone.utc).isoformat()
+
+        if action == "update_job_review":
+            if str(job.get("approval_status") or "") == "Approved":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Approved jobs cannot be edited without an explicit reopen action.",
+                )
+            if not edits:
+                raise HTTPException(status_code=400, detail="No review fields provided to update.")
+            self.store.update_job_status(job_sheet_id, edits)
+        elif action == "approve_job_sheet":
+            if str(job.get("processing_status") or "").strip() != "Completed":
+                raise HTTPException(status_code=400, detail="Approve requires processing_status=Completed.")
+            patch = {
+                **edits,
+                "approval_status": "Approved",
+                "approved_by": actor,
+                "approved_at": now,
+                "returned_by": "",
+                "returned_at": "",
+                "return_reason": "",
+            }
+            self.store.update_job_status(job_sheet_id, patch)
+        elif action == "return_job_sheet":
+            reason = str(body.get("return_reason") or "").strip()
+            if not reason:
+                raise HTTPException(status_code=400, detail="return_reason is required.")
+            patch = {
+                **edits,
+                "approval_status": "Returned for Correction",
+                "returned_by": actor,
+                "returned_at": now,
+                "return_reason": reason[:500],
+                "approved_by": "",
+                "approved_at": "",
+            }
+            self.store.update_job_status(job_sheet_id, patch)
+        elif action == "reopen_job_sheet":
+            if str(job.get("approval_status") or "") != "Approved":
+                raise HTTPException(status_code=400, detail="Reopen requires approval_status=Approved.")
+            self.store.update_job_status(
+                job_sheet_id,
+                {"approval_status": "Pending Review", "approved_by": "", "approved_at": ""},
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown review action: {action}")
+
+        self.store.append_sync_log(
+            {
+                "record_id": job_sheet_id,
+                "target_system": "FieldOS_Review",
+                "status": "Success",
+                "request_payload": {
+                    "action": action,
+                    "job_sheet_id": job_sheet_id,
+                    "actor_staff_id": staff_id,
+                    "actor_role": actor_role,
+                    "fields_changed": list(edits.keys()),
+                    "return_reason_present": bool(str(body.get("return_reason") or "").strip()),
+                },
+                "response_payload": {"ok": True},
+            }
+        )
+        updated = self.store.get_job(job_sheet_id) or {}
+        return {"job": updated, "warnings": []}
