@@ -155,6 +155,8 @@ class MaterialEntry(BaseModel):
     completion_id: Optional[str] = None
     job_sheet_id: Optional[str] = None
     item_name: str = ""
+    catalog_material_id: str = ""
+    item_code: str = ""
     quantity: Optional[float] = None
     unit: str = ""
     billable: bool = False
@@ -483,3 +485,528 @@ class CreateExportBatchRequest(BaseModel):
 
 class ExportBatchVersionRequest(BaseModel):
     expected_version: Optional[int] = None
+
+
+# --------------------------------------------------------------------------
+# Phase 3E — rates, financial mappings and completion pricing snapshots.
+# Money crosses the API as decimal strings only; the server stores integer cents.
+# --------------------------------------------------------------------------
+
+Money = Optional[str]
+
+
+class RateAuditFields(BaseModel):
+    created_by: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    updated_by: str = ""
+    updated_at: Optional[Union[datetime, str]] = None
+    version: int = 1
+
+
+class RateOverlap(BaseModel):
+    a_id: str = ""
+    b_id: str = ""
+    message: str = ""
+
+
+class RateRecordVersionRequest(BaseModel):
+    expected_version: Optional[int] = None
+
+
+class RateCardIn(BaseModel):
+    card_name: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = None
+    currency: Optional[str] = Field(default=None, max_length=8)
+    status: Optional[str] = None
+    effective_from: Optional[str] = None
+    effective_to: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RateCardUpdateRequest(RateCardIn, RateRecordVersionRequest):
+    pass
+
+
+class RateCardOut(RateAuditFields):
+    rate_card_id: str
+    card_name: str = ""
+    description: str = ""
+    currency: str = ""
+    status: str = ""
+    effective_from: str = ""
+    effective_to: str = ""
+    notes: str = ""
+
+
+class LabourRateIn(BaseModel):
+    rate_card_id: Optional[str] = None
+    staff_id: Optional[str] = None
+    customer_id: Optional[str] = None
+    project_id: Optional[str] = None
+    role_code: Optional[str] = None
+    activity_code: Optional[str] = None
+    unit: Optional[str] = None
+    sell_rate: Money = Field(default=None, description="Decimal string, e.g. '85.00'.")
+    cost_rate: Money = None
+    travel_rate: Money = None
+    overtime_rate: Money = None
+    status: Optional[str] = None
+    effective_from: Optional[str] = None
+    effective_to: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class LabourRateUpdateRequest(LabourRateIn, RateRecordVersionRequest):
+    pass
+
+
+class LabourRateOut(RateAuditFields):
+    labour_rate_id: str
+    rate_card_id: str = ""
+    staff_id: str = ""
+    customer_id: str = ""
+    project_id: str = ""
+    role_code: str = ""
+    activity_code: str = ""
+    unit: str = ""
+    sell_rate: str = ""
+    cost_rate: str = ""
+    travel_rate: str = ""
+    overtime_rate: str = ""
+    status: str = ""
+    effective_from: str = ""
+    effective_to: str = ""
+    notes: str = ""
+
+
+class MachineryRateIn(BaseModel):
+    rate_card_id: Optional[str] = None
+    equipment_id: Optional[str] = None
+    equipment_name: Optional[str] = None
+    charge_code: Optional[str] = None
+    unit: Optional[str] = None
+    sell_rate: Money = None
+    cost_rate: Money = None
+    minimum_charge: Money = None
+    status: Optional[str] = None
+    effective_from: Optional[str] = None
+    effective_to: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class MachineryRateUpdateRequest(MachineryRateIn, RateRecordVersionRequest):
+    pass
+
+
+class MachineryRateOut(RateAuditFields):
+    machinery_rate_id: str
+    rate_card_id: str = ""
+    equipment_id: str = ""
+    equipment_name: str = ""
+    charge_code: str = ""
+    unit: str = ""
+    sell_rate: str = ""
+    cost_rate: str = ""
+    minimum_charge: str = ""
+    status: str = ""
+    effective_from: str = ""
+    effective_to: str = ""
+    notes: str = ""
+
+
+class MaterialCatalogItemIn(BaseModel):
+    item_code: Optional[str] = None
+    item_name: Optional[str] = None
+    description: Optional[str] = None
+    unit: Optional[str] = None
+    cost_price: Money = None
+    sell_price: Money = None
+    tax_code: Optional[str] = None
+    account_code: Optional[str] = None
+    supplier: Optional[str] = None
+    active: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class MaterialCatalogItemUpdateRequest(MaterialCatalogItemIn, RateRecordVersionRequest):
+    pass
+
+
+class MaterialCatalogItemOut(RateAuditFields):
+    material_id: str
+    item_code: str = ""
+    item_name: str = ""
+    description: str = ""
+    unit: str = ""
+    cost_price: str = ""
+    sell_price: str = ""
+    tax_code: str = ""
+    account_code: str = ""
+    supplier: str = ""
+    active: str = ""
+    notes: str = ""
+
+
+class CustomerPricingIn(BaseModel):
+    customer_id: Optional[str] = None
+    project_id: Optional[str] = None
+    rate_card_id: Optional[str] = None
+    price_notes: Optional[str] = None
+    status: Optional[str] = None
+    effective_from: Optional[str] = None
+    effective_to: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CustomerPricingUpdateRequest(CustomerPricingIn, RateRecordVersionRequest):
+    pass
+
+
+class CustomerPricingOut(RateAuditFields):
+    customer_pricing_id: str
+    customer_id: str = ""
+    project_id: str = ""
+    rate_card_id: str = ""
+    price_notes: str = ""
+    status: str = ""
+    effective_from: str = ""
+    effective_to: str = ""
+    notes: str = ""
+
+
+class PayrollMappingIn(BaseModel):
+    staff_id: Optional[str] = None
+    employee_reference: Optional[str] = None
+    ordinary_hours_code: Optional[str] = None
+    overtime_hours_code: Optional[str] = None
+    travel_hours_code: Optional[str] = None
+    allowance_code: Optional[str] = None
+    cost_centre: Optional[str] = None
+    pay_calendar: Optional[str] = None
+    # Captured for payroll handoff only — FieldOS never infers these.
+    employment_classification: Optional[str] = None
+    award_reference: Optional[str] = None
+    status: Optional[str] = None
+    effective_from: Optional[str] = None
+    effective_to: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PayrollMappingUpdateRequest(PayrollMappingIn, RateRecordVersionRequest):
+    pass
+
+
+class PayrollMappingOut(RateAuditFields):
+    payroll_mapping_id: str
+    staff_id: str = ""
+    employee_reference: str = ""
+    ordinary_hours_code: str = ""
+    overtime_hours_code: str = ""
+    travel_hours_code: str = ""
+    allowance_code: str = ""
+    cost_centre: str = ""
+    pay_calendar: str = ""
+    employment_classification: str = ""
+    award_reference: str = ""
+    status: str = ""
+    effective_from: str = ""
+    effective_to: str = ""
+    notes: str = ""
+
+
+class XeroMappingIn(BaseModel):
+    entity_type: Optional[str] = None
+    local_reference: Optional[str] = None
+    xero_reference: Optional[str] = None
+    account_code: Optional[str] = None
+    tax_type: Optional[str] = None
+    tax_rate_percent: Optional[float] = None
+    tracking_category: Optional[str] = None
+    tracking_option: Optional[str] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class XeroMappingUpdateRequest(XeroMappingIn, RateRecordVersionRequest):
+    pass
+
+
+class XeroMappingOut(RateAuditFields):
+    xero_mapping_id: str
+    entity_type: str = ""
+    local_reference: str = ""
+    xero_reference: str = ""
+    account_code: str = ""
+    tax_type: str = ""
+    tax_rate_percent: Optional[Union[float, str]] = None
+    tracking_category: str = ""
+    tracking_option: str = ""
+    status: str = ""
+    notes: str = ""
+
+
+class RateCardListResponse(BaseModel):
+    items: List[RateCardOut] = Field(default_factory=list)
+    overlaps: List[RateOverlap] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class RateCardResponse(BaseModel):
+    item: RateCardOut
+    data_mode: str
+    assumptions: List[str]
+
+
+class LabourRateListResponse(BaseModel):
+    items: List[LabourRateOut] = Field(default_factory=list)
+    overlaps: List[RateOverlap] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class LabourRateResponse(BaseModel):
+    item: LabourRateOut
+    data_mode: str
+    assumptions: List[str]
+
+
+class MachineryRateListResponse(BaseModel):
+    items: List[MachineryRateOut] = Field(default_factory=list)
+    overlaps: List[RateOverlap] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class MachineryRateResponse(BaseModel):
+    item: MachineryRateOut
+    data_mode: str
+    assumptions: List[str]
+
+
+class MaterialCatalogListResponse(BaseModel):
+    items: List[MaterialCatalogItemOut] = Field(default_factory=list)
+    overlaps: List[RateOverlap] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class MaterialCatalogItemResponse(BaseModel):
+    item: MaterialCatalogItemOut
+    data_mode: str
+    assumptions: List[str]
+
+
+class CustomerPricingListResponse(BaseModel):
+    items: List[CustomerPricingOut] = Field(default_factory=list)
+    overlaps: List[RateOverlap] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class CustomerPricingResponse(BaseModel):
+    item: CustomerPricingOut
+    data_mode: str
+    assumptions: List[str]
+
+
+class PayrollMappingListResponse(BaseModel):
+    items: List[PayrollMappingOut] = Field(default_factory=list)
+    overlaps: List[RateOverlap] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class PayrollMappingResponse(BaseModel):
+    item: PayrollMappingOut
+    data_mode: str
+    assumptions: List[str]
+
+
+class XeroMappingListResponse(BaseModel):
+    items: List[XeroMappingOut] = Field(default_factory=list)
+    overlaps: List[RateOverlap] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class XeroMappingResponse(BaseModel):
+    item: XeroMappingOut
+    data_mode: str
+    assumptions: List[str]
+
+
+class PricingIdentity(BaseModel):
+    customer_id: str = ""
+    project_id: str = ""
+    customer_name: str = ""
+    project_name: str = ""
+    job_date: str = ""
+    rate_card_id: str = ""
+    match: str = ""
+
+
+class PayrollMappingStatus(BaseModel):
+    staff_id: str = ""
+    work_date: str = ""
+    resolved: bool = False
+    source_id: str = ""
+    blockers: List[str] = Field(default_factory=list)
+
+
+class MaterialSuggestionMatch(BaseModel):
+    material_id: str = ""
+    item_code: str = ""
+    item_name: str = ""
+
+
+class MaterialSuggestion(BaseModel):
+    source_row_id: str = ""
+    item_name: str = ""
+    suggested_matches: List[MaterialSuggestionMatch] = Field(default_factory=list)
+
+
+class SampleRate(BaseModel):
+    line_type: str = ""
+    description: str = ""
+    source_row_id: str = ""
+    quantity: Optional[float] = None
+    unit: str = ""
+    unit_sell: str = ""
+    resolved: bool = False
+    rate_source_type: str = ""
+    rate_source_id: str = ""
+    non_billable_reason: str = ""
+    blockers: List[str] = Field(default_factory=list)
+
+
+class TotalsPreview(BaseModel):
+    subtotal_ex_tax: str = ""
+    tax_amount: str = ""
+    total_inc_tax: str = ""
+    tax_type: str = ""
+    currency: str = "AUD"
+
+
+class PricingReadinessResponse(BaseModel):
+    completion_id: str
+    job_sheet_id: str = ""
+    identity: PricingIdentity
+    invoice_pricing_ready: bool = False
+    payroll_mapping_ready: bool = False
+    invoice_blockers: List[str] = Field(default_factory=list)
+    payroll_blockers: List[str] = Field(default_factory=list)
+    blockers: List[str] = Field(default_factory=list)
+    pricing_status: str = "Unresolved"
+    xero_customer_reference: str = ""
+    payroll_mappings: List[PayrollMappingStatus] = Field(default_factory=list)
+    material_suggestions: List[MaterialSuggestion] = Field(default_factory=list)
+    sample_rates: List[SampleRate] = Field(default_factory=list)
+    totals_preview: TotalsPreview
+    data_mode: str
+    assumptions: List[str]
+
+
+class FinancialLineOut(BaseModel):
+    financial_line_id: str = ""
+    financial_snapshot_id: str = ""
+    completion_id: str = ""
+    line_number: int = 0
+    line_type: str = ""
+    source_row_id: str = ""
+    description: str = ""
+    staff_id: str = ""
+    equipment_id: str = ""
+    material_id: str = ""
+    quantity: Optional[float] = None
+    unit: str = ""
+    unit_sell: str = ""
+    line_amount_ex_tax: str = ""
+    tax_type: str = ""
+    tax_rate_percent: Optional[float] = None
+    tax_amount: str = ""
+    line_total_inc_tax: str = ""
+    account_code: str = ""
+    rate_source_type: str = ""
+    rate_source_id: str = ""
+    billable: bool = False
+    non_billable_reason: str = ""
+    blockers: List[str] = Field(default_factory=list)
+    created_at: Optional[Union[datetime, str]] = None
+
+
+class FinancialSnapshotOut(BaseModel):
+    financial_snapshot_id: str
+    completion_id: str = ""
+    job_sheet_id: str = ""
+    customer_id: str = ""
+    project_id: str = ""
+    job_date: str = ""
+    currency: str = "AUD"
+    snapshot_status: str = ""
+    pricing_status: str = ""
+    rate_card_id: str = ""
+    line_count: int = 0
+    subtotal_ex_tax: str = ""
+    tax_amount: str = ""
+    total_inc_tax: str = ""
+    tax_type: str = ""
+    tax_rate_percent: Optional[float] = None
+    account_code: str = ""
+    draft_reference: str = ""
+    xero_reference: str = ""
+    blockers: List[str] = Field(default_factory=list)
+    notes: str = ""
+    created_by: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    validated_by: str = ""
+    validated_at: Optional[Union[datetime, str]] = None
+    approved_by: str = ""
+    approved_at: Optional[Union[datetime, str]] = None
+    superseded_by: str = ""
+    superseded_at: Optional[Union[datetime, str]] = None
+    version: int = 1
+
+
+class FinancialSnapshotResponse(BaseModel):
+    financial_snapshot: FinancialSnapshotOut
+    lines: List[FinancialLineOut] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class FinancialSnapshotListItem(BaseModel):
+    financial_snapshot_id: str
+    completion_id: str = ""
+    job_sheet_id: str = ""
+    customer_id: str = ""
+    project_id: str = ""
+    job_date: str = ""
+    snapshot_status: str = ""
+    pricing_status: str = ""
+    line_count: int = 0
+    subtotal_ex_tax: str = ""
+    tax_amount: str = ""
+    total_inc_tax: str = ""
+    draft_reference: str = ""
+    xero_reference: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    version: int = 1
+
+
+class FinancialSnapshotListResponse(BaseModel):
+    items: List[FinancialSnapshotListItem] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class CreateFinancialSnapshotRequest(BaseModel):
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class FinancialSnapshotVersionRequest(BaseModel):
+    expected_version: Optional[int] = None
+
+
+class SupersedeFinancialSnapshotRequest(FinancialSnapshotVersionRequest):
+    reason: str = Field(min_length=1, max_length=500)

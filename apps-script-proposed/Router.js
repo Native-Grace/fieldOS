@@ -144,7 +144,35 @@ function routeRequest(payload) {
     case "validate_export_batch":
     case "generate_export_batch":
     case "get_export_batch_csv":
-    case "cancel_export_batch": {
+    case "cancel_export_batch":
+    case "list_rate_cards":
+    case "create_rate_card":
+    case "update_rate_card":
+    case "list_labour_rates":
+    case "create_labour_rate":
+    case "update_labour_rate":
+    case "list_machinery_rates":
+    case "create_machinery_rate":
+    case "update_machinery_rate":
+    case "list_material_catalog":
+    case "create_material_catalog_item":
+    case "update_material_catalog_item":
+    case "list_customer_pricing":
+    case "create_customer_pricing":
+    case "update_customer_pricing":
+    case "list_payroll_mappings":
+    case "create_payroll_mapping":
+    case "update_payroll_mapping":
+    case "list_xero_mappings":
+    case "create_xero_mapping":
+    case "update_xero_mapping":
+    case "get_completion_pricing_readiness":
+    case "create_financial_snapshot":
+    case "list_financial_snapshots":
+    case "get_financial_snapshot":
+    case "validate_financial_snapshot":
+    case "approve_financial_snapshot":
+    case "supersede_financial_snapshot": {
       const fieldosResult = fieldosRouteRequest(payload);
       if (!fieldosResult) {
         throw new Error(`Routing Failure: Action '${action}' is unsupported.`);

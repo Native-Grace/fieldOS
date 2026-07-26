@@ -84,6 +84,11 @@ export default function JobsPage() {
               Completions
             </Link>
           )}
+          {manager && (
+            <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/rates">
+              Rates
+            </Link>
+          )}
           <label className="range-select">
             <span className="visually-hidden">Date range</span>
             <select

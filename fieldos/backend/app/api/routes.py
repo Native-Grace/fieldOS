@@ -14,12 +14,20 @@ from app.models.schemas import (
     CompletionReopenRequest,
     CompletionUpdateRequest,
     CreateExportBatchRequest,
+    CreateFinancialSnapshotRequest,
+    CustomerPricingIn,
+    CustomerPricingListResponse,
+    CustomerPricingResponse,
+    CustomerPricingUpdateRequest,
     DashboardResponse,
     DashboardSummaryResponse,
     ExportBatchListResponse,
     ExportBatchResponse,
     ExportBatchVersionRequest,
     ExportReadinessResponse,
+    FinancialSnapshotListResponse,
+    FinancialSnapshotResponse,
+    FinancialSnapshotVersionRequest,
     HealthResponse,
     InvalidateRecordingRequest,
     JobCompletionOut,
@@ -30,12 +38,33 @@ from app.models.schemas import (
     JobReviewResponse,
     JobSummary,
     LabourEntry,
+    LabourRateIn,
+    LabourRateListResponse,
+    LabourRateResponse,
+    LabourRateUpdateRequest,
     LoginRequest,
     LoginResponse,
     MachineryEntry,
+    MachineryRateIn,
+    MachineryRateListResponse,
+    MachineryRateResponse,
+    MachineryRateUpdateRequest,
+    MaterialCatalogItemIn,
+    MaterialCatalogItemResponse,
+    MaterialCatalogItemUpdateRequest,
+    MaterialCatalogListResponse,
     MaterialEntry,
+    PayrollMappingIn,
+    PayrollMappingListResponse,
+    PayrollMappingResponse,
+    PayrollMappingUpdateRequest,
+    PricingReadinessResponse,
     ProcessRequest,
     ProcessResponse,
+    RateCardIn,
+    RateCardListResponse,
+    RateCardResponse,
+    RateCardUpdateRequest,
     ReadyResponse,
     RecordingMutationResponse,
     RecordingOut,
@@ -44,6 +73,11 @@ from app.models.schemas import (
     ReturnJobRequest,
     ReviewEditRequest,
     StaffOut,
+    SupersedeFinancialSnapshotRequest,
+    XeroMappingIn,
+    XeroMappingListResponse,
+    XeroMappingResponse,
+    XeroMappingUpdateRequest,
 )
 from app.services.auth_store import AuthUserStore
 from app.services.jobs import JobService
@@ -762,6 +796,676 @@ async def download_export(
             "X-Export-Checksum": str(result.get("checksum") or ""),
         },
     )
+
+
+# --------------------------------------------------------------------------
+# Phase 3E — rates, financial mappings and completion pricing snapshots.
+# Every endpoint below is manager/admin only.
+# --------------------------------------------------------------------------
+
+
+async def _rates_call(
+    action: str,
+    *,
+    claims: dict,
+    service: JobService,
+    body: dict,
+) -> dict:
+    role = require_manager_or_admin(claims)
+    return await service.rates_action(
+        action,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=body,
+    )
+
+
+def _rate_filters(
+    on_date: Optional[str] = None,
+    include_inactive: bool = False,
+    **extra: Optional[str],
+) -> dict:
+    filters: dict = {"include_inactive": include_inactive}
+    if on_date:
+        filters["on_date"] = on_date
+    for key, value in extra.items():
+        if value:
+            filters[key] = value
+    return filters
+
+
+@router.get("/rate-cards", response_model=RateCardListResponse)
+async def list_rate_cards(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    on_date: Optional[str] = Query(None),
+    include_inactive: bool = Query(False),
+) -> RateCardListResponse:
+    result = await _rates_call(
+        "list_rate_cards",
+        claims=claims,
+        service=service,
+        body=_rate_filters(on_date, include_inactive),
+    )
+    return RateCardListResponse(
+        items=result.get("items") or [],
+        overlaps=result.get("overlaps") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/rate-cards", response_model=RateCardResponse)
+async def create_rate_card(
+    body: RateCardIn,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> RateCardResponse:
+    result = await _rates_call(
+        "create_rate_card",
+        claims=claims,
+        service=service,
+        body={"record": body.model_dump(exclude_none=True)},
+    )
+    return RateCardResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.patch("/rate-cards/{rate_card_id}", response_model=RateCardResponse)
+async def update_rate_card(
+    rate_card_id: str,
+    body: RateCardUpdateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> RateCardResponse:
+    payload = body.model_dump(exclude_none=True)
+    expected_version = payload.pop("expected_version", None)
+    result = await _rates_call(
+        "update_rate_card",
+        claims=claims,
+        service=service,
+        body={
+            "rate_card_id": rate_card_id,
+            "expected_version": expected_version,
+            "record": payload,
+        },
+    )
+    return RateCardResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.get("/rates/labour", response_model=LabourRateListResponse)
+async def list_labour_rates(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    on_date: Optional[str] = Query(None),
+    include_inactive: bool = Query(False),
+    rate_card_id: Optional[str] = Query(None),
+    customer_id: Optional[str] = Query(None),
+    staff_id: Optional[str] = Query(None),
+) -> LabourRateListResponse:
+    result = await _rates_call(
+        "list_labour_rates",
+        claims=claims,
+        service=service,
+        body=_rate_filters(
+            on_date,
+            include_inactive,
+            rate_card_id=rate_card_id,
+            customer_id=customer_id,
+            staff_id_filter=staff_id,
+        ),
+    )
+    return LabourRateListResponse(
+        items=result.get("items") or [],
+        overlaps=result.get("overlaps") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/rates/labour", response_model=LabourRateResponse)
+async def create_labour_rate(
+    body: LabourRateIn,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> LabourRateResponse:
+    result = await _rates_call(
+        "create_labour_rate",
+        claims=claims,
+        service=service,
+        body={"record": body.model_dump(exclude_none=True)},
+    )
+    return LabourRateResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.patch("/rates/labour/{labour_rate_id}", response_model=LabourRateResponse)
+async def update_labour_rate(
+    labour_rate_id: str,
+    body: LabourRateUpdateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> LabourRateResponse:
+    payload = body.model_dump(exclude_none=True)
+    expected_version = payload.pop("expected_version", None)
+    result = await _rates_call(
+        "update_labour_rate",
+        claims=claims,
+        service=service,
+        body={
+            "labour_rate_id": labour_rate_id,
+            "expected_version": expected_version,
+            "record": payload,
+        },
+    )
+    return LabourRateResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.get("/rates/machinery", response_model=MachineryRateListResponse)
+async def list_machinery_rates(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    on_date: Optional[str] = Query(None),
+    include_inactive: bool = Query(False),
+    rate_card_id: Optional[str] = Query(None),
+) -> MachineryRateListResponse:
+    result = await _rates_call(
+        "list_machinery_rates",
+        claims=claims,
+        service=service,
+        body=_rate_filters(on_date, include_inactive, rate_card_id=rate_card_id),
+    )
+    return MachineryRateListResponse(
+        items=result.get("items") or [],
+        overlaps=result.get("overlaps") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/rates/machinery", response_model=MachineryRateResponse)
+async def create_machinery_rate(
+    body: MachineryRateIn,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> MachineryRateResponse:
+    result = await _rates_call(
+        "create_machinery_rate",
+        claims=claims,
+        service=service,
+        body={"record": body.model_dump(exclude_none=True)},
+    )
+    return MachineryRateResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.patch("/rates/machinery/{machinery_rate_id}", response_model=MachineryRateResponse)
+async def update_machinery_rate(
+    machinery_rate_id: str,
+    body: MachineryRateUpdateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> MachineryRateResponse:
+    payload = body.model_dump(exclude_none=True)
+    expected_version = payload.pop("expected_version", None)
+    result = await _rates_call(
+        "update_machinery_rate",
+        claims=claims,
+        service=service,
+        body={
+            "machinery_rate_id": machinery_rate_id,
+            "expected_version": expected_version,
+            "record": payload,
+        },
+    )
+    return MachineryRateResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.get("/materials/catalog", response_model=MaterialCatalogListResponse)
+async def list_material_catalog(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    include_inactive: bool = Query(False),
+) -> MaterialCatalogListResponse:
+    result = await _rates_call(
+        "list_material_catalog",
+        claims=claims,
+        service=service,
+        body=_rate_filters(None, include_inactive),
+    )
+    return MaterialCatalogListResponse(
+        items=result.get("items") or [],
+        overlaps=result.get("overlaps") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/materials/catalog", response_model=MaterialCatalogItemResponse)
+async def create_material_catalog_item(
+    body: MaterialCatalogItemIn,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> MaterialCatalogItemResponse:
+    result = await _rates_call(
+        "create_material_catalog_item",
+        claims=claims,
+        service=service,
+        body={"record": body.model_dump(exclude_none=True)},
+    )
+    return MaterialCatalogItemResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.patch("/materials/catalog/{material_id}", response_model=MaterialCatalogItemResponse)
+async def update_material_catalog_item(
+    material_id: str,
+    body: MaterialCatalogItemUpdateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> MaterialCatalogItemResponse:
+    payload = body.model_dump(exclude_none=True)
+    expected_version = payload.pop("expected_version", None)
+    result = await _rates_call(
+        "update_material_catalog_item",
+        claims=claims,
+        service=service,
+        body={
+            "material_id": material_id,
+            "expected_version": expected_version,
+            "record": payload,
+        },
+    )
+    return MaterialCatalogItemResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.get("/pricing/customer", response_model=CustomerPricingListResponse)
+async def list_customer_pricing(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    on_date: Optional[str] = Query(None),
+    include_inactive: bool = Query(False),
+    customer_id: Optional[str] = Query(None),
+    rate_card_id: Optional[str] = Query(None),
+) -> CustomerPricingListResponse:
+    result = await _rates_call(
+        "list_customer_pricing",
+        claims=claims,
+        service=service,
+        body=_rate_filters(
+            on_date, include_inactive, customer_id=customer_id, rate_card_id=rate_card_id
+        ),
+    )
+    return CustomerPricingListResponse(
+        items=result.get("items") or [],
+        overlaps=result.get("overlaps") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/pricing/customer", response_model=CustomerPricingResponse)
+async def create_customer_pricing(
+    body: CustomerPricingIn,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> CustomerPricingResponse:
+    result = await _rates_call(
+        "create_customer_pricing",
+        claims=claims,
+        service=service,
+        body={"record": body.model_dump(exclude_none=True)},
+    )
+    return CustomerPricingResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.patch("/pricing/customer/{customer_pricing_id}", response_model=CustomerPricingResponse)
+async def update_customer_pricing(
+    customer_pricing_id: str,
+    body: CustomerPricingUpdateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> CustomerPricingResponse:
+    payload = body.model_dump(exclude_none=True)
+    expected_version = payload.pop("expected_version", None)
+    result = await _rates_call(
+        "update_customer_pricing",
+        claims=claims,
+        service=service,
+        body={
+            "customer_pricing_id": customer_pricing_id,
+            "expected_version": expected_version,
+            "record": payload,
+        },
+    )
+    return CustomerPricingResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.get("/mappings/payroll", response_model=PayrollMappingListResponse)
+async def list_payroll_mappings(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    on_date: Optional[str] = Query(None),
+    include_inactive: bool = Query(False),
+    staff_id: Optional[str] = Query(None),
+) -> PayrollMappingListResponse:
+    result = await _rates_call(
+        "list_payroll_mappings",
+        claims=claims,
+        service=service,
+        body=_rate_filters(on_date, include_inactive, staff_id_filter=staff_id),
+    )
+    return PayrollMappingListResponse(
+        items=result.get("items") or [],
+        overlaps=result.get("overlaps") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/mappings/payroll", response_model=PayrollMappingResponse)
+async def create_payroll_mapping(
+    body: PayrollMappingIn,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> PayrollMappingResponse:
+    result = await _rates_call(
+        "create_payroll_mapping",
+        claims=claims,
+        service=service,
+        body={"record": body.model_dump(exclude_none=True)},
+    )
+    return PayrollMappingResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.patch("/mappings/payroll/{payroll_mapping_id}", response_model=PayrollMappingResponse)
+async def update_payroll_mapping(
+    payroll_mapping_id: str,
+    body: PayrollMappingUpdateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> PayrollMappingResponse:
+    payload = body.model_dump(exclude_none=True)
+    expected_version = payload.pop("expected_version", None)
+    result = await _rates_call(
+        "update_payroll_mapping",
+        claims=claims,
+        service=service,
+        body={
+            "payroll_mapping_id": payroll_mapping_id,
+            "expected_version": expected_version,
+            "record": payload,
+        },
+    )
+    return PayrollMappingResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.get("/mappings/xero", response_model=XeroMappingListResponse)
+async def list_xero_mappings(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    include_inactive: bool = Query(False),
+    entity_type: Optional[str] = Query(None),
+) -> XeroMappingListResponse:
+    result = await _rates_call(
+        "list_xero_mappings",
+        claims=claims,
+        service=service,
+        body=_rate_filters(None, include_inactive, entity_type=entity_type),
+    )
+    return XeroMappingListResponse(
+        items=result.get("items") or [],
+        overlaps=result.get("overlaps") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/mappings/xero", response_model=XeroMappingResponse)
+async def create_xero_mapping(
+    body: XeroMappingIn,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> XeroMappingResponse:
+    result = await _rates_call(
+        "create_xero_mapping",
+        claims=claims,
+        service=service,
+        body={"record": body.model_dump(exclude_none=True)},
+    )
+    return XeroMappingResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.patch("/mappings/xero/{xero_mapping_id}", response_model=XeroMappingResponse)
+async def update_xero_mapping(
+    xero_mapping_id: str,
+    body: XeroMappingUpdateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> XeroMappingResponse:
+    payload = body.model_dump(exclude_none=True)
+    expected_version = payload.pop("expected_version", None)
+    result = await _rates_call(
+        "update_xero_mapping",
+        claims=claims,
+        service=service,
+        body={
+            "xero_mapping_id": xero_mapping_id,
+            "expected_version": expected_version,
+            "record": payload,
+        },
+    )
+    return XeroMappingResponse(
+        item=result["item"], data_mode=settings.data_mode, assumptions=service.assumptions()
+    )
+
+
+@router.get(
+    "/completions/{completion_id}/pricing/readiness", response_model=PricingReadinessResponse
+)
+async def completion_pricing_readiness(
+    completion_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> PricingReadinessResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.pricing_readiness(
+        staff_id=str(claims["sub"]), actor_role=role, completion_id=completion_id
+    )
+    return PricingReadinessResponse(
+        **{**result, "completion_id": str(result.get("completion_id") or completion_id)},
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+async def _snapshot_call(
+    action: str,
+    *,
+    claims: dict,
+    service: JobService,
+    body: dict,
+) -> dict:
+    role = require_manager_or_admin(claims)
+    return await service.financial_snapshot_action(
+        action,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=body,
+    )
+
+
+def _snapshot_response(
+    result: dict, settings: Settings, service: JobService
+) -> FinancialSnapshotResponse:
+    return FinancialSnapshotResponse(
+        financial_snapshot=result.get("financial_snapshot") or {},
+        lines=result.get("lines") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post(
+    "/completions/{completion_id}/financial-snapshots", response_model=FinancialSnapshotResponse
+)
+async def create_financial_snapshot(
+    completion_id: str,
+    body: CreateFinancialSnapshotRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> FinancialSnapshotResponse:
+    result = await _snapshot_call(
+        "create_financial_snapshot",
+        claims=claims,
+        service=service,
+        body={"completion_id": completion_id, **body.model_dump(exclude_none=True)},
+    )
+    return _snapshot_response(result, settings, service)
+
+
+@router.get(
+    "/completions/{completion_id}/financial-snapshots",
+    response_model=FinancialSnapshotListResponse,
+)
+async def list_completion_financial_snapshots(
+    completion_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    snapshot_status: Optional[str] = Query(None),
+) -> FinancialSnapshotListResponse:
+    result = await _snapshot_call(
+        "list_financial_snapshots",
+        claims=claims,
+        service=service,
+        body={"completion_id": completion_id, "snapshot_status": snapshot_status or ""},
+    )
+    return FinancialSnapshotListResponse(
+        items=result.get("items") or [],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/financial-snapshots/{snapshot_id}", response_model=FinancialSnapshotResponse)
+async def get_financial_snapshot(
+    snapshot_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> FinancialSnapshotResponse:
+    result = await _snapshot_call(
+        "get_financial_snapshot",
+        claims=claims,
+        service=service,
+        body={"financial_snapshot_id": snapshot_id},
+    )
+    return _snapshot_response(result, settings, service)
+
+
+@router.post(
+    "/financial-snapshots/{snapshot_id}/validate", response_model=FinancialSnapshotResponse
+)
+async def validate_financial_snapshot(
+    snapshot_id: str,
+    body: FinancialSnapshotVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> FinancialSnapshotResponse:
+    result = await _snapshot_call(
+        "validate_financial_snapshot",
+        claims=claims,
+        service=service,
+        body={"financial_snapshot_id": snapshot_id, **body.model_dump(exclude_none=True)},
+    )
+    return _snapshot_response(result, settings, service)
+
+
+@router.post(
+    "/financial-snapshots/{snapshot_id}/approve", response_model=FinancialSnapshotResponse
+)
+async def approve_financial_snapshot(
+    snapshot_id: str,
+    body: FinancialSnapshotVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> FinancialSnapshotResponse:
+    result = await _snapshot_call(
+        "approve_financial_snapshot",
+        claims=claims,
+        service=service,
+        body={"financial_snapshot_id": snapshot_id, **body.model_dump(exclude_none=True)},
+    )
+    return _snapshot_response(result, settings, service)
+
+
+@router.post(
+    "/financial-snapshots/{snapshot_id}/supersede", response_model=FinancialSnapshotResponse
+)
+async def supersede_financial_snapshot(
+    snapshot_id: str,
+    body: SupersedeFinancialSnapshotRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> FinancialSnapshotResponse:
+    result = await _snapshot_call(
+        "supersede_financial_snapshot",
+        claims=claims,
+        service=service,
+        body={"financial_snapshot_id": snapshot_id, **body.model_dump(exclude_none=True)},
+    )
+    return _snapshot_response(result, settings, service)
 
 
 @router.get("/jobs/{job_sheet_id}/completion", response_model=JobCompletionResponse)

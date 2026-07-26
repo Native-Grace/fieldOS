@@ -120,6 +120,8 @@ def _normalise_material(row: dict[str, Any], completion_id: str, job_sheet_id: s
         "completion_id": completion_id,
         "job_sheet_id": job_sheet_id,
         "item_name": str(row.get("item_name") or ""),
+        "catalog_material_id": str(row.get("catalog_material_id") or ""),
+        "item_code": str(row.get("item_code") or ""),
         "quantity": qty,
         "unit": str(row.get("unit") or ""),
         "billable": _bool(row.get("billable")),

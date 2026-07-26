@@ -12,6 +12,40 @@ from app.services.drive_upload import redact_secrets, safe_json_preview
 
 logger = get_logger(__name__)
 
+# Phase 3E gateway actions (see FieldOSGateway.js).
+RATES_ACTIONS = (
+    "list_rate_cards",
+    "create_rate_card",
+    "update_rate_card",
+    "list_labour_rates",
+    "create_labour_rate",
+    "update_labour_rate",
+    "list_machinery_rates",
+    "create_machinery_rate",
+    "update_machinery_rate",
+    "list_material_catalog",
+    "create_material_catalog_item",
+    "update_material_catalog_item",
+    "list_customer_pricing",
+    "create_customer_pricing",
+    "update_customer_pricing",
+    "list_payroll_mappings",
+    "create_payroll_mapping",
+    "update_payroll_mapping",
+    "list_xero_mappings",
+    "create_xero_mapping",
+    "update_xero_mapping",
+)
+
+FINANCIAL_SNAPSHOT_ACTIONS = (
+    "create_financial_snapshot",
+    "list_financial_snapshots",
+    "get_financial_snapshot",
+    "validate_financial_snapshot",
+    "approve_financial_snapshot",
+    "supersede_financial_snapshot",
+)
+
 
 class AppsScriptError(Exception):
     """Normalized Apps Script / transport failure for repository layer."""
@@ -300,6 +334,25 @@ class AppsScriptClient:
         return await self._post("get_completion_export_readiness", {**safe_body, **self._column_payload()})
 
     async def export_batch_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post(action, {**safe_body, **self._column_payload()})
+
+    async def rates_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Phase 3E rate card / rate / mapping CRUD actions."""
+        if action not in RATES_ACTIONS:
+            raise AppsScriptError(f"Unsupported rates action: {action}", http_status=400)
+        safe_body = redact_secrets(body)
+        return await self._post(action, {**safe_body, **self._column_payload()})
+
+    async def get_completion_pricing_readiness(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post(
+            "get_completion_pricing_readiness", {**safe_body, **self._column_payload()}
+        )
+
+    async def financial_snapshot_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        if action not in FINANCIAL_SNAPSHOT_ACTIONS:
+            raise AppsScriptError(f"Unsupported snapshot action: {action}", http_status=400)
         safe_body = redact_secrets(body)
         return await self._post(action, {**safe_body, **self._column_payload()})
 

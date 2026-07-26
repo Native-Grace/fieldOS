@@ -22,6 +22,17 @@ const JobMaterialEntryRepository = new BaseRepository('tbl_job_materials', 'mate
 const ExportBatchRepository = new BaseRepository('tbl_export_batches', 'export_batch_id', 'EXP');
 const ExportBatchItemRepository = new BaseRepository('tbl_export_batch_items', 'export_batch_item_id', 'EXI');
 
+// Phase 3E — rates, financial mappings and completion pricing snapshots.
+const RateCardRepository = new BaseRepository('tbl_rate_cards', 'rate_card_id', 'RC');
+const LabourRateRepository = new BaseRepository('tbl_labour_rates', 'labour_rate_id', 'LR');
+const MachineryRateRepository = new BaseRepository('tbl_machinery_rates', 'machinery_rate_id', 'MR');
+const MaterialCatalogRepository = new BaseRepository('tbl_material_catalog', 'material_id', 'MATC');
+const CustomerPricingRepository = new BaseRepository('tbl_customer_pricing', 'customer_pricing_id', 'CP');
+const PayrollMappingRepository = new BaseRepository('tbl_payroll_mappings', 'payroll_mapping_id', 'PM');
+const XeroMappingRepository = new BaseRepository('tbl_xero_mappings', 'xero_mapping_id', 'XM');
+const CompletionFinancialRepository = new BaseRepository('tbl_completion_financials', 'financial_snapshot_id', 'CFS');
+const CompletionFinancialLineRepository = new BaseRepository('tbl_completion_financial_lines', 'financial_line_id', 'CFL');
+
 const RecordingRepository = new BaseRepository({
   tableName: 'tbl_recordings',
   idField: 'recording_id',

@@ -21,6 +21,19 @@ Live Web App URL / secrets remain in local `.env` only (never commit). Further A
 | `VoiceProcessing.js` | Queue facade `VoiceProcessing.executePipeline` + OpenAI Whisper FieldOS bridge (mirrored from `apps-script/`). Skips `Invalid` and already-`Processed` recordings. |
 | `OpenAI.js` | Whisper `transcribeAudio` helper (mirrored from `apps-script/`) |
 | `FieldOSGateway.js` | Includes `invalidate_recording` / `delete_recording` (Drive cleanup before row delete) |
+| `RatesFinancialHelpers.js` | Phase 3E pure money/rate-resolution helpers (integer cents, half-up per line). Mirrors `fieldos/backend/app/services/rates_math.py` |
+| `RatesFinancial.js` | Phase 3E `FieldOSRatesFinancial` — rate cards, labour/machinery rates, material catalog, customer pricing, payroll/Xero mappings, pricing readiness, financial snapshots |
+| `Repositories.js` | Adds the nine Phase 3E repositories (`RC`, `LR`, `MR`, `MATC`, `CP`, `PM`, `XM`, `CFS`, `CFL`) |
+| `Setup.js` | Adds `migrateSchemaForRatesFinancial()` — non-destructive tab/column creation |
+| `Router.js` | Routes the 28 Phase 3E actions |
+| `JobCompletion.js` | Completion reads used by pricing readiness |
+
+### Phase 3E deploy note
+
+Push `RatesFinancialHelpers.js` and `RatesFinancial.js` alongside the updated Gateway / Router /
+Repositories / Setup / JobCompletion, then run `migrateSchemaForRatesFinancial()` against a
+non-production spreadsheet first. The migration seeds no rate values — managers enter them via
+the `/rates` UI. See `docs/PHASE3E_RATES_AND_FINANCIAL_STAGING.md`.
 
 ### Live verification (Phase 2 voice path)
 

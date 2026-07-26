@@ -301,6 +301,73 @@ class JobService:
         )
         return result
 
+    async def rates_action(
+        self,
+        action: str,
+        *,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            **body,
+            "staff_id": staff_id,
+            "actor_staff_id": staff_id,
+            "actor_role": actor_role,
+            "actor_identity": actor_identity,
+        }
+        result = await self.repo.arates_action(action, payload)
+        log_extra(
+            logger,
+            20,
+            "Rates configuration action",
+            action=action,
+            staff_id=staff_id,
+            actor_role=actor_role,
+            record_version=str((result.get("item") or {}).get("version") or ""),
+        )
+        return result
+
+    async def pricing_readiness(
+        self, *, staff_id: str, actor_role: str, completion_id: str
+    ) -> dict[str, Any]:
+        if isinstance(self.repo, AppsScriptJobRepository):
+            return await self.repo.apricing_readiness(actor_role, staff_id, completion_id)
+        return await self.repo.apricing_readiness(actor_role, completion_id)
+
+    async def financial_snapshot_action(
+        self,
+        action: str,
+        *,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            **body,
+            "staff_id": staff_id,
+            "actor_staff_id": staff_id,
+            "actor_role": actor_role,
+            "actor_identity": actor_identity,
+        }
+        # Money is always recomputed server-side from stored rates.
+        for key in ("subtotal_ex_tax", "tax_amount", "total_inc_tax", "lines"):
+            payload.pop(key, None)
+        result = await self.repo.afinancial_snapshot_action(action, payload)
+        log_extra(
+            logger,
+            20,
+            "Financial snapshot action",
+            action=action,
+            staff_id=staff_id,
+            actor_role=actor_role,
+            completion_id=str(body.get("completion_id") or ""),
+            financial_snapshot_id=str(body.get("financial_snapshot_id") or ""),
+        )
+        return result
+
     async def save_recording(
         self,
         job_sheet_id: str,

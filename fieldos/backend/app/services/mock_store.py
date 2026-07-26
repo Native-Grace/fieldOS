@@ -280,3 +280,90 @@ class MockStore:
             rows.append(batch)
         self._write(self.export_batches_path, rows)
         return batch
+
+    # Phase 3E rates / financial collections. Never seeded — rates are configured, not invented.
+    RATES_COLLECTIONS = {
+        "rate_cards": "rate_cards.json",
+        "labour_rates": "labour_rates.json",
+        "machinery_rates": "machinery_rates.json",
+        "material_catalog": "material_catalog.json",
+        "customer_pricing": "customer_pricing.json",
+        "payroll_mappings": "payroll_mappings.json",
+        "xero_mappings": "xero_mappings.json",
+    }
+
+    def rates_path(self, collection: str) -> Path:
+        try:
+            filename = self.RATES_COLLECTIONS[collection]
+        except KeyError as exc:
+            raise KeyError(f"Unknown rates collection '{collection}'.") from exc
+        return self.root / filename
+
+    def list_rates_rows(self, collection: str) -> list[dict[str, Any]]:
+        return self._read(self.rates_path(collection))
+
+    def get_rates_row(self, collection: str, id_field: str, row_id: str) -> dict[str, Any] | None:
+        for row in self.list_rates_rows(collection):
+            if str(row.get(id_field)) == str(row_id):
+                return row
+        return None
+
+    def upsert_rates_row(
+        self, collection: str, id_field: str, record: dict[str, Any]
+    ) -> dict[str, Any]:
+        rows = self.list_rates_rows(collection)
+        row_id = str(record.get(id_field) or "")
+        replaced = False
+        for idx, row in enumerate(rows):
+            if str(row.get(id_field)) == row_id:
+                rows[idx] = record
+                replaced = True
+                break
+        if not replaced:
+            rows.append(record)
+        self._write(self.rates_path(collection), rows)
+        return record
+
+    @property
+    def financial_snapshots_path(self) -> Path:
+        return self.root / "financial_snapshots.json"
+
+    @property
+    def financial_snapshot_lines_path(self) -> Path:
+        return self.root / "financial_snapshot_lines.json"
+
+    def list_financial_snapshots(self) -> list[dict[str, Any]]:
+        return self._read(self.financial_snapshots_path)
+
+    def get_financial_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        for row in self.list_financial_snapshots():
+            if str(row.get("financial_snapshot_id")) == str(snapshot_id):
+                return row
+        return None
+
+    def upsert_financial_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        rows = self.list_financial_snapshots()
+        snapshot_id = str(snapshot.get("financial_snapshot_id") or "")
+        replaced = False
+        for idx, row in enumerate(rows):
+            if str(row.get("financial_snapshot_id")) == snapshot_id:
+                rows[idx] = snapshot
+                replaced = True
+                break
+        if not replaced:
+            rows.append(snapshot)
+        self._write(self.financial_snapshots_path, rows)
+        return snapshot
+
+    def list_financial_snapshot_lines(self, snapshot_id: str | None = None) -> list[dict[str, Any]]:
+        rows = self._read(self.financial_snapshot_lines_path)
+        if snapshot_id is None:
+            return rows
+        return [
+            row for row in rows if str(row.get("financial_snapshot_id")) == str(snapshot_id)
+        ]
+
+    def append_financial_snapshot_lines(self, lines: list[dict[str, Any]]) -> None:
+        rows = self._read(self.financial_snapshot_lines_path)
+        rows.extend(lines)
+        self._write(self.financial_snapshot_lines_path, rows)

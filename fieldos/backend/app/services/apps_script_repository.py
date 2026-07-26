@@ -57,6 +57,28 @@ def _raise_from_apps(exc: AppsScriptError) -> None:
     raise HTTPException(status_code=502, detail=safe) from exc
 
 
+def _raise_from_rates_apps(exc: AppsScriptError) -> None:
+    """Phase 3E mapping: Forbidden→403, Not Found→404, Conflict→409, Validation Error→422, else 502."""
+    code = exc.http_status or 502
+    message = str(exc) or "Apps Script error"
+    lower = message.lower()
+    if code == 403 or "forbidden" in lower:
+        raise HTTPException(status_code=403, detail="Manager or admin role required.") from exc
+    if code == 404 or "not found" in lower:
+        raise HTTPException(status_code=404, detail=message) from exc
+    if code == 409 or "conflict" in lower or "changed since you loaded" in lower:
+        raise HTTPException(status_code=409, detail=message) from exc
+    if code == 422 or "validation error" in lower or "missing required attribute" in lower:
+        raise HTTPException(status_code=422, detail=message) from exc
+    if code == 400:
+        raise HTTPException(status_code=400, detail=message) from exc
+    if code == 504:
+        raise HTTPException(status_code=504, detail="Apps Script request timed out") from exc
+    if code == 503:
+        raise HTTPException(status_code=503, detail=message) from exc
+    raise HTTPException(status_code=502, detail=message) from exc
+
+
 class AppsScriptJobRepository:
     def __init__(self, settings: Settings, apps_script: AppsScriptClient | None = None):
         self.settings = settings
@@ -299,6 +321,50 @@ class AppsScriptJobRepository:
             raise
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         return data
+
+    async def arates_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.rates_action(action, body)
+        except AppsScriptError as exc:
+            _raise_from_rates_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        payload: dict[str, Any] = {"action": action}
+        if isinstance(data.get("items"), list):
+            payload["items"] = [item for item in data["items"] if isinstance(item, dict)]
+            payload["overlaps"] = [
+                row for row in (data.get("overlaps") or []) if isinstance(row, dict)
+            ]
+        if isinstance(data.get("item"), dict):
+            payload["item"] = data["item"]
+        return payload
+
+    async def apricing_readiness(
+        self, actor_role: str, staff_id: str, completion_id: str
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.get_completion_pricing_readiness(
+                {
+                    "actor_role": actor_role,
+                    "staff_id": staff_id,
+                    "actor_staff_id": staff_id,
+                    "completion_id": completion_id,
+                }
+            )
+        except AppsScriptError as exc:
+            _raise_from_rates_apps(exc)
+            raise
+        return result.get("data") if isinstance(result.get("data"), dict) else {}
+
+    async def afinancial_snapshot_action(
+        self, action: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.financial_snapshot_action(action, body)
+        except AppsScriptError as exc:
+            _raise_from_rates_apps(exc)
+            raise
+        return result.get("data") if isinstance(result.get("data"), dict) else {}
 
     async def acompletion_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         try:

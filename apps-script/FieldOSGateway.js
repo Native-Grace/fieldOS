@@ -106,6 +106,62 @@ function fieldosRouteRequest(payload) {
       return FieldOSCompletionExports.getExportBatchCsv(payload);
     case "cancel_export_batch":
       return FieldOSCompletionExports.cancelExportBatch(payload);
+    case "list_rate_cards":
+      return FieldOSRatesFinancial.listRateCards(payload);
+    case "create_rate_card":
+      return FieldOSRatesFinancial.createRateCard(payload);
+    case "update_rate_card":
+      return FieldOSRatesFinancial.updateRateCard(payload);
+    case "list_labour_rates":
+      return FieldOSRatesFinancial.listLabourRates(payload);
+    case "create_labour_rate":
+      return FieldOSRatesFinancial.createLabourRate(payload);
+    case "update_labour_rate":
+      return FieldOSRatesFinancial.updateLabourRate(payload);
+    case "list_machinery_rates":
+      return FieldOSRatesFinancial.listMachineryRates(payload);
+    case "create_machinery_rate":
+      return FieldOSRatesFinancial.createMachineryRate(payload);
+    case "update_machinery_rate":
+      return FieldOSRatesFinancial.updateMachineryRate(payload);
+    case "list_material_catalog":
+      return FieldOSRatesFinancial.listMaterialCatalog(payload);
+    case "create_material_catalog_item":
+      return FieldOSRatesFinancial.createMaterialCatalogItem(payload);
+    case "update_material_catalog_item":
+      return FieldOSRatesFinancial.updateMaterialCatalogItem(payload);
+    case "list_customer_pricing":
+      return FieldOSRatesFinancial.listCustomerPricing(payload);
+    case "create_customer_pricing":
+      return FieldOSRatesFinancial.createCustomerPricing(payload);
+    case "update_customer_pricing":
+      return FieldOSRatesFinancial.updateCustomerPricing(payload);
+    case "list_payroll_mappings":
+      return FieldOSRatesFinancial.listPayrollMappings(payload);
+    case "create_payroll_mapping":
+      return FieldOSRatesFinancial.createPayrollMapping(payload);
+    case "update_payroll_mapping":
+      return FieldOSRatesFinancial.updatePayrollMapping(payload);
+    case "list_xero_mappings":
+      return FieldOSRatesFinancial.listXeroMappings(payload);
+    case "create_xero_mapping":
+      return FieldOSRatesFinancial.createXeroMapping(payload);
+    case "update_xero_mapping":
+      return FieldOSRatesFinancial.updateXeroMapping(payload);
+    case "get_completion_pricing_readiness":
+      return FieldOSRatesFinancial.getCompletionPricingReadiness(payload);
+    case "create_financial_snapshot":
+      return FieldOSRatesFinancial.createFinancialSnapshot(payload);
+    case "list_financial_snapshots":
+      return FieldOSRatesFinancial.listFinancialSnapshots(payload);
+    case "get_financial_snapshot":
+      return FieldOSRatesFinancial.getFinancialSnapshot(payload);
+    case "validate_financial_snapshot":
+      return FieldOSRatesFinancial.validateFinancialSnapshot(payload);
+    case "approve_financial_snapshot":
+      return FieldOSRatesFinancial.approveFinancialSnapshot(payload);
+    case "supersede_financial_snapshot":
+      return FieldOSRatesFinancial.supersedeFinancialSnapshot(payload);
     default:
       return null;
   }

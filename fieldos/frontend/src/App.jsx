@@ -5,6 +5,7 @@ import JobsPage from "./pages/JobsPage";
 import JobDetailPage from "./pages/JobDetailPage";
 import RecorderPage from "./pages/RecorderPage";
 import CompletionsDashboardPage from "./pages/CompletionsDashboardPage";
+import RatesFinancialPage from "./pages/RatesFinancialPage";
 
 function Private({ children }) {
   if (!getToken()) return <Navigate to="/login" replace />;
@@ -29,6 +30,14 @@ export default function App() {
           element={
             <Private>
               <CompletionsDashboardPage />
+            </Private>
+          }
+        />
+        <Route
+          path="/rates"
+          element={
+            <Private>
+              <RatesFinancialPage />
             </Private>
           }
         />

@@ -177,3 +177,58 @@ function migrateSchemaForCompletionExports() {
   ensureTable("tbl_export_batch_items", FIELDOS_EXPORT_ITEM_HEADERS_);
   Logger.log("Phase 3D completion export migration completed.");
 }
+
+/**
+ * Phase 3E: ensure rates / financial mapping / pricing snapshot sheets exist.
+ * Non-destructive — creates missing tabs and appends missing columns only.
+ * Does not write rate values; pricing data is entered by managers.
+ */
+function migrateSchemaForRatesFinancial() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (!spreadsheetId) {
+    throw new Error("Migration Error: 'SPREADSHEET_ID' script property is missing or blank in Project Settings.");
+  }
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+
+  function ensureTable(sheetName, columns) {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.getRange(1, 1, 1, columns.length).setValues([columns]);
+      sheet
+        .getRange(1, 1, 1, columns.length)
+        .setFontWeight("bold")
+        .setBackground("#f3f3f3")
+        .setHorizontalAlignment("left");
+      sheet.autoResizeColumns(1, columns.length);
+      Logger.log("Success [" + sheetName + "]: Created sheet with headers.");
+      return;
+    }
+    const lastCol = sheet.getLastColumn();
+    const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+    let nextCol = lastCol + 1;
+    columns.forEach(function (colName) {
+      if (headers.indexOf(colName) >= 0) {
+        Logger.log("Notice [" + sheetName + "]: '" + colName + "' already exists. Skipping.");
+        return;
+      }
+      const cell = sheet.getRange(1, nextCol);
+      cell.setValue(colName);
+      cell.setFontWeight("bold").setBackground("#f3f3f3").setHorizontalAlignment("left");
+      sheet.autoResizeColumns(nextCol, 1);
+      Logger.log("Success [" + sheetName + "]: Added column -> " + colName);
+      nextCol += 1;
+    });
+  }
+
+  ensureTable("tbl_rate_cards", FIELDOS_RATE_CARD_HEADERS_);
+  ensureTable("tbl_labour_rates", FIELDOS_LABOUR_RATE_HEADERS_);
+  ensureTable("tbl_machinery_rates", FIELDOS_MACHINERY_RATE_HEADERS_);
+  ensureTable("tbl_material_catalog", FIELDOS_MATERIAL_CATALOG_HEADERS_);
+  ensureTable("tbl_customer_pricing", FIELDOS_CUSTOMER_PRICING_HEADERS_);
+  ensureTable("tbl_payroll_mappings", FIELDOS_PAYROLL_MAPPING_HEADERS_);
+  ensureTable("tbl_xero_mappings", FIELDOS_XERO_MAPPING_HEADERS_);
+  ensureTable("tbl_completion_financials", FIELDOS_COMPLETION_FINANCIAL_HEADERS_);
+  ensureTable("tbl_completion_financial_lines", FIELDOS_COMPLETION_FINANCIAL_LINE_HEADERS_);
+  Logger.log("Phase 3E rates and financial migration completed.");
+}

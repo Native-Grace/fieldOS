@@ -261,6 +261,9 @@ export default function CompletionsDashboardPage() {
           <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/">
             Jobs
           </Link>
+          <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/rates">
+            Rates
+          </Link>
           <button className="btn btn-ghost" style={{ width: "auto" }} onClick={logout} type="button">
             Log out
           </button>

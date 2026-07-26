@@ -13,6 +13,7 @@ from app.core.config import Settings
 from app.services.apps_script import AppsScriptClient
 from app.services.mock_completion import MockCompletionMixin
 from app.services.mock_export import MockExportMixin
+from app.services.mock_rates import MockRatesMixin
 from app.services.mock_store import MockStore
 
 MOCK_ASSUMPTIONS = [
@@ -20,10 +21,12 @@ MOCK_ASSUMPTIONS = [
     "Assignment filter uses JOB_ASSIGNMENT_COLUMN (default staff_id — live tbl_job_sheets).",
     "Date filter uses JOB_DATE_COLUMN (default date).",
     "Display: JOB_PROJECT_COLUMN defaults to project_id (ID until project lookup); JOB_CUSTOMER_COLUMN defaults to customer_name (not on job sheet).",
+    "Rates, mappings and financial snapshots start empty — no rates are seeded and unresolved rates never price as zero.",
+    "Pricing identity uses job sheet customer_id / project_id columns only; display names are never used as identifiers.",
 ]
 
 
-class MockJobRepository(MockCompletionMixin, MockExportMixin):
+class MockJobRepository(MockCompletionMixin, MockExportMixin, MockRatesMixin):
     def __init__(self, settings: Settings, apps_script: AppsScriptClient | None = None):
         self.settings = settings
         self.store = MockStore(settings)
