@@ -49,36 +49,33 @@ function fieldosComputeLabourEntry_(entry, options) {
     : 0;
 
   if (!Number.isFinite(breakMinutes)) {
-    errors.push("break_minutes must be a number.");
+    errors.push("Break minutes must be a number.");
     breakMinutes = 0;
   }
   if (!Number.isFinite(travelMinutes)) {
     errors.push("travel_minutes must be a number.");
     travelMinutes = 0;
   }
-  if (breakMinutes < 0) errors.push("break_minutes cannot be negative.");
+  if (breakMinutes < 0) errors.push("Break minutes cannot be negative.");
   if (travelMinutes < 0) errors.push("travel_minutes cannot be negative.");
 
-  if (start == null && String((entry && entry.start_time) || "").trim() !== "") {
-    errors.push("start_time is invalid (use HH:MM).");
+  const startRaw = String((entry && entry.start_time) || "").trim();
+  const finishRaw = String((entry && entry.finish_time) || "").trim();
+  // Blank → required only. Non-empty invalid → format only. Never both for one field.
+  if (start == null) {
+    errors.push(startRaw === "" ? "Start time is required." : "Start time must use HH:MM.");
   }
-  if (finish == null && String((entry && entry.finish_time) || "").trim() !== "") {
-    errors.push("finish_time is invalid (use HH:MM).");
+  if (finish == null) {
+    errors.push(finishRaw === "" ? "Finish time is required." : "Finish time must use HH:MM.");
   }
   if (start == null || finish == null) {
-    if (start == null && String((entry && entry.start_time) || "").trim() === "") {
-      warnings.push("Missing start_time.");
-    }
-    if (finish == null && String((entry && entry.finish_time) || "").trim() === "") {
-      warnings.push("Missing finish_time.");
-    }
     return {
-      ok: errors.length === 0 && start != null && finish != null,
+      ok: false,
       gross_minutes: null,
       net_labour_minutes: null,
       labour_hours: null,
       travel_hours: Math.round((travelMinutes / 60) * 100) / 100,
-      errors: errors,
+      errors: fieldosUniqueMessages_(errors),
       warnings: warnings
     };
   }
@@ -91,14 +88,14 @@ function fieldosComputeLabourEntry_(entry, options) {
       net_labour_minutes: null,
       labour_hours: null,
       travel_hours: Math.round((travelMinutes / 60) * 100) / 100,
-      errors: errors,
-      warnings: warnings
+      errors: fieldosUniqueMessages_(errors),
+      warnings: fieldosUniqueMessages_(warnings)
     };
   }
 
   const gross = finish - start;
   if (breakMinutes > gross) {
-    errors.push("break_minutes cannot exceed gross shift duration.");
+    errors.push("Break minutes cannot exceed gross shift duration.");
   }
   const net = Math.max(0, gross - Math.max(0, breakMinutes));
   const labourHours = Math.round((net / 60) * 100) / 100;
@@ -114,9 +111,66 @@ function fieldosComputeLabourEntry_(entry, options) {
     net_labour_minutes: net,
     labour_hours: labourHours,
     travel_hours: travelHours,
-    errors: errors,
-    warnings: warnings
+    errors: fieldosUniqueMessages_(errors),
+    warnings: fieldosUniqueMessages_(warnings)
   };
+}
+
+/** Stable warning key for resolve / override gating. */
+function fieldosWarningKey_(text) {
+  const t = String(text || "").toLowerCase();
+  if (/contradictory lunch|confirm unpaid break/.test(t)) return "contradictory_lunch";
+  if (/multiple lunch\/break|confirm break_minutes/.test(t)) return "break_minutes_confirm";
+  if (/incomplete sentence|incomplete|fragment/.test(t)) return "incomplete_fragments";
+  if (/all day/.test(t)) return "all_day_unconfirmed";
+  return "warning:" + t.replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function fieldosIsResolvableBreakWarning_(text) {
+  const key = fieldosWarningKey_(text);
+  return key === "contradictory_lunch" || key === "break_minutes_confirm";
+}
+
+function fieldosIsNonCriticalAckWarning_(text) {
+  if (fieldosIsResolvableBreakWarning_(text)) return false;
+  const key = fieldosWarningKey_(text);
+  return key === "incomplete_fragments" || key === "all_day_unconfirmed";
+}
+
+function fieldosUniqueMessages_(messages) {
+  const seen = {};
+  const out = [];
+  (messages || []).forEach(function (m) {
+    const t = String(m || "").trim();
+    if (!t || seen[t]) return;
+    seen[t] = true;
+    out.push(t);
+  });
+  return out;
+}
+
+/**
+ * Find a resolution for a warning text / key.
+ * Resolutions: [{ warning_key, warning_text, resolved, break_minutes, resolution_note, ... }]
+ */
+function fieldosFindWarningResolution_(resolutions, warningText) {
+  const key = fieldosWarningKey_(warningText);
+  const list = Array.isArray(resolutions) ? resolutions : [];
+  for (let i = 0; i < list.length; i++) {
+    const row = list[i] || {};
+    const rowKey = String(row.warning_key || "").trim() || fieldosWarningKey_(row.warning_text);
+    if (rowKey === key) return row;
+  }
+  return null;
+}
+
+function fieldosIsBreakWarningResolved_(resolutions, warningText) {
+  const row = fieldosFindWarningResolution_(resolutions, warningText);
+  if (!row || !row.resolved) return false;
+  const breakMinutes = row.break_minutes;
+  if (breakMinutes == null || breakMinutes === "") return false;
+  const n = Number(breakMinutes);
+  return Number.isFinite(n) && n >= 0;
 }
 
 function fieldosComputeMachineryDurationHours_(entry) {
@@ -404,6 +458,9 @@ function fieldosBuildCompletionDraftFromJob_(job, options) {
 
 /**
  * Finalisation gate checks. Returns { ok, criticalErrors, nonCriticalWarnings }.
+ * Critical arithmetic / missing times cannot be overridden.
+ * Lunch/break contradictions require explicit resolution (verified break_minutes).
+ * Other non-critical ack warnings require override_reason when still unresolved.
  */
 function fieldosValidateCompletionForFinalise_(completion, job, options) {
   const opts = options || {};
@@ -411,6 +468,10 @@ function fieldosValidateCompletionForFinalise_(completion, job, options) {
   const nonCritical = [];
   const status = String((job && job.approval_status) || "").trim();
   const processing = String((job && job.processing_status) || "").trim();
+  const resolutions =
+    (completion && completion.warning_resolutions) ||
+    opts.warning_resolutions ||
+    [];
 
   if (status !== "Approved") {
     critical.push("Job approval_status must be Approved to finalise.");
@@ -442,9 +503,7 @@ function fieldosValidateCompletionForFinalise_(completion, job, options) {
     calc.errors.forEach(function (e) {
       critical.push("labour[" + idx + "]: " + e);
     });
-    if (calc.net_labour_minutes == null) {
-      critical.push("labour[" + idx + "]: start_time and finish_time are required.");
-    }
+    // Do NOT add a second "start/finish required" when calc already reported field errors.
     calc.warnings.forEach(function (w) {
       nonCritical.push("labour[" + idx + "]: " + w);
     });
@@ -471,39 +530,47 @@ function fieldosValidateCompletionForFinalise_(completion, job, options) {
     }
   });
 
+  // Totals recompute hours only — do not re-push the same labour/machinery field errors.
   const totals = fieldosComputeCompletionTotals_(labour, machinery);
-  totals.errors.forEach(function (e) {
-    critical.push(e);
-  });
 
   const existingWarnings = Array.isArray(completion && completion.warnings)
     ? completion.warnings
     : [];
   existingWarnings.forEach(function (w) {
     const text = String(w || "").trim();
-    if (!text) return;
-    if (/contradict|critical|invalid/i.test(text)) {
-      nonCritical.push(text);
-    } else {
-      nonCritical.push(text);
-    }
+    if (text) nonCritical.push(text);
   });
 
-  const overrideReason = String(opts.override_reason || "").trim();
-  const unresolvedCriticalWarnings = nonCritical.filter(function (w) {
-    return /contradict/i.test(w);
+  const unresolvedBreak = [];
+  existingWarnings.forEach(function (w) {
+    const text = String(w || "").trim();
+    if (!text || !fieldosIsResolvableBreakWarning_(text)) return;
+    if (!fieldosIsBreakWarningResolved_(resolutions, text)) {
+      unresolvedBreak.push(text);
+    }
   });
-  if (unresolvedCriticalWarnings.length && !overrideReason) {
+  if (unresolvedBreak.length) {
     critical.push(
-      "Unresolved critical warnings require override_reason: " +
-        unresolvedCriticalWarnings.join("; ")
+      "Resolve lunch/break contradiction by confirming break minutes: " +
+        unresolvedBreak.join("; ")
+    );
+  }
+
+  // Override is only for unresolved non-critical ack warnings — never arithmetic/time.
+  const overrideReason = String(opts.override_reason || "").trim();
+  const needsAck = existingWarnings.filter(function (w) {
+    return fieldosIsNonCriticalAckWarning_(w);
+  });
+  if (needsAck.length && !overrideReason) {
+    critical.push(
+      "Unresolved non-critical warnings require override_reason: " + needsAck.join("; ")
     );
   }
 
   return {
-    ok: critical.length === 0,
-    criticalErrors: critical,
-    nonCriticalWarnings: nonCritical,
+    ok: fieldosUniqueMessages_(critical).length === 0,
+    criticalErrors: fieldosUniqueMessages_(critical),
+    nonCriticalWarnings: fieldosUniqueMessages_(nonCritical),
     totals: totals
   };
 }

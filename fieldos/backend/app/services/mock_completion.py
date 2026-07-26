@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -32,8 +33,14 @@ def _bool(value: Any) -> bool:
 
 def _normalise_labour(row: dict[str, Any], completion_id: str, job_sheet_id: str, now: str) -> dict[str, Any]:
     calc = compute_labour_entry(row)
-    if calc["errors"]:
-        raise HTTPException(status_code=422, detail="Validation Error: " + " ".join(calc["errors"]))
+    # Drafts may keep blank start/finish. Finalise still requires times.
+    blocking = [
+        err
+        for err in calc["errors"]
+        if not re.search(r"Start time is required\.|Finish time is required\.", err)
+    ]
+    if blocking:
+        raise HTTPException(status_code=422, detail="Validation Error: " + " ".join(blocking))
     return {
         "labour_id": str(row.get("labour_id") or f"LAB-{uuid.uuid4().hex[:8].upper()}"),
         "completion_id": completion_id,
@@ -261,6 +268,7 @@ class MockCompletionMixin:
                 "non_billable_labour_hours": 0,
                 "variations": [],
                 "warnings": [],
+                "warning_resolutions": [],
                 "labour_entries": [],
                 "machinery_entries": [],
                 "material_entries": [],
@@ -344,6 +352,7 @@ class MockCompletionMixin:
                 )},
                 "variations": draft["variations"],
                 "warnings": draft["warnings"],
+                "warning_resolutions": [],
                 "labour_entries": labour,
                 "machinery_entries": machinery,
                 "material_entries": materials,
@@ -452,6 +461,11 @@ class MockCompletionMixin:
                         list(body["warnings"])
                         if body.get("warnings") is not None
                         else completion.get("warnings") or []
+                    ),
+                    "warning_resolutions": (
+                        list(body["warning_resolutions"])
+                        if body.get("warning_resolutions") is not None
+                        else completion.get("warning_resolutions") or []
                     ),
                     "completion_status": next_status,
                     "labour_entries": labour,

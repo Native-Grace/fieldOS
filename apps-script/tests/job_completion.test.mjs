@@ -317,6 +317,148 @@ test("stale version rejected and finalise/reopen flow", () => {
   assert.equal(data.completion.completion_status, "Reopened");
 });
 
+test("blank times produce required errors only; malformed produce format only; no duplicates", () => {
+  const ctx = loadHelpers();
+  const blank = ctx.fieldosComputeLabourEntry_({
+    start_time: "",
+    finish_time: "",
+    break_minutes: 0,
+  });
+  assert.equal(blank.ok, false);
+  assert.equal(blank.errors.join("|"), "Start time is required.|Finish time is required.");
+  assert.equal(blank.warnings.length, 0);
+
+  const malformed = ctx.fieldosComputeLabourEntry_({
+    start_time: "25:99",
+    finish_time: "noon",
+    break_minutes: 0,
+  });
+  assert.equal(malformed.ok, false);
+  assert.equal(
+    malformed.errors.join("|"),
+    "Start time must use HH:MM.|Finish time must use HH:MM."
+  );
+  assert.ok(!malformed.errors.some((e) => /required/i.test(e)));
+
+  const gate = ctx.fieldosValidateCompletionForFinalise_(
+    {
+      completion_status: "Draft",
+      work_summary: "Work",
+      invoice_description: "Invoice",
+      warnings: [],
+      warning_resolutions: [],
+      labour_entries: [
+        {
+          start_time: "",
+          finish_time: "",
+          break_minutes: 0,
+          confirmation_status: "Confirmed",
+        },
+      ],
+      machinery_entries: [],
+      material_entries: [],
+    },
+    approvedJob()
+  );
+  assert.equal(gate.ok, false);
+  const required = gate.criticalErrors.filter((e) => /Start time is required|Finish time is required/.test(e));
+  assert.equal(required.length, 2);
+  assert.equal(new Set(gate.criticalErrors).size, gate.criticalErrors.length);
+  assert.ok(!gate.criticalErrors.some((e) => /start_time and finish_time are required/i.test(e)));
+});
+
+test("resolved lunch contradiction with confirmed break allows finalisation", () => {
+  const ctx = loadHelpers();
+  const lunchWarning =
+    "Contradictory lunch information in source text — confirm unpaid break manually.";
+  const completion = {
+    completion_status: "Draft",
+    work_summary: "Planted trees",
+    invoice_description: "Seven trees",
+    warnings: [lunchWarning],
+    warning_resolutions: [
+      {
+        warning_key: "contradictory_lunch",
+        warning_text: lunchWarning,
+        resolved: true,
+        break_minutes: 30,
+        resolution_note: "Confirmed 30 min unpaid lunch",
+      },
+    ],
+    labour_entries: [
+      {
+        start_time: "07:00",
+        finish_time: "15:00",
+        break_minutes: 30,
+        confirmation_status: "Confirmed",
+      },
+    ],
+    machinery_entries: [],
+    material_entries: [],
+  };
+  const gate = ctx.fieldosValidateCompletionForFinalise_(completion, approvedJob(), {
+    override_reason: "",
+  });
+  assert.equal(gate.ok, true, gate.criticalErrors.join(" | "));
+  assert.equal(gate.totals.total_labour_hours, 7.5);
+});
+
+test("unresolved lunch contradiction blocks finalisation even with override_reason", () => {
+  const ctx = loadHelpers();
+  const lunchWarning =
+    "Contradictory lunch information in source text — confirm unpaid break manually.";
+  const gate = ctx.fieldosValidateCompletionForFinalise_(
+    {
+      completion_status: "Draft",
+      work_summary: "Planted trees",
+      invoice_description: "Seven trees",
+      warnings: [lunchWarning],
+      warning_resolutions: [],
+      labour_entries: [
+        {
+          start_time: "07:00",
+          finish_time: "15:00",
+          break_minutes: 30,
+          confirmation_status: "Confirmed",
+        },
+      ],
+      machinery_entries: [],
+      material_entries: [],
+    },
+    approvedJob({ manager_review_items: "" }),
+    { override_reason: "Please ignore lunch notes" }
+  );
+  assert.equal(gate.ok, false);
+  assert.ok(gate.criticalErrors.some((e) => /Resolve lunch\/break contradiction/i.test(e)));
+});
+
+test("invalid arithmetic cannot be overridden", () => {
+  const ctx = loadHelpers();
+  const gate = ctx.fieldosValidateCompletionForFinalise_(
+    {
+      completion_status: "Draft",
+      work_summary: "Planted trees",
+      invoice_description: "Seven trees",
+      warnings: [],
+      warning_resolutions: [],
+      labour_entries: [
+        {
+          start_time: "08:00",
+          finish_time: "09:00",
+          break_minutes: 90,
+          confirmation_status: "Confirmed",
+        },
+      ],
+      machinery_entries: [],
+      material_entries: [],
+    },
+    approvedJob({ manager_review_items: "", ai_transcript: "Planted trees." }),
+    { override_reason: "Manager override arithmetic" }
+  );
+  assert.equal(gate.ok, false);
+  assert.ok(gate.criticalErrors.some((e) => /Break minutes cannot exceed/i.test(e)));
+});
+
 test("finalisation blocked when suggested rows remain", () => {
   const h = harness();
   const ctx = loadCompletion(h);

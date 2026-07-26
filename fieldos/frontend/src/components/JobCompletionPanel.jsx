@@ -6,12 +6,20 @@ import {
   ROW_CONFIRMATION,
   buildCompletionForm,
   canFinaliseClient,
+  collectLabourValidationMessages,
   completionHasUnsavedChanges,
   displayLabourHours,
   emptyLabourRow,
   emptyMachineryRow,
   emptyMaterialRow,
   EMPTY_COMPLETION_FORM,
+  isBreakWarningResolved,
+  isResolvableBreakWarning,
+  findWarningResolution,
+  labourFieldErrors,
+  needsOverrideReason,
+  upsertBreakWarningResolution,
+  warningKey,
 } from "../jobCompletionHelpers.mjs";
 
 export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
@@ -26,6 +34,9 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
   const [busy, setBusy] = useState(false);
   const [reopenReason, setReopenReason] = useState("");
   const [showReopen, setShowReopen] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [resolveDrafts, setResolveDrafts] = useState({});
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
   // Lazy: completion is a separate, heavier round-trip. Do NOT fetch on job open —
   // it must never block or slow down core job detail rendering.
   const [opened, setOpened] = useState(false);
@@ -62,6 +73,9 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
     setBaseline(EMPTY_COMPLETION_FORM);
     setError("");
     setMessage("");
+    setOverrideReason("");
+    setResolveDrafts({});
+    setShowFieldErrors(false);
   }, [jobSheetId]);
 
   function openPanel() {
@@ -152,14 +166,53 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
   }
 
   async function finalise() {
+    const labourMessages = collectLabourValidationMessages(form);
+    if (labourMessages.length) {
+      setShowFieldErrors(true);
+      setError(labourMessages.join(" "));
+      return;
+    }
     if (!canFinaliseClient(form)) {
-      setError("Confirm or exclude all suggested rows and complete required fields before finalising.");
+      setShowFieldErrors(true);
+      setError("Confirm or exclude all suggested rows, complete times, and resolve lunch/break warnings before finalising.");
+      return;
+    }
+    if (needsOverrideReason(form) && !String(overrideReason || "").trim()) {
+      setError("Enter an override reason for remaining non-critical warnings, or clear them.");
       return;
     }
     if (!window.confirm("Finalise this job completion? It will become read-only.")) return;
     await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion/finalise`, "POST", {
       expected_version: completion?.version,
+      override_reason: String(overrideReason || "").trim() || undefined,
     });
+  }
+
+  function applyBreakResolution(warningText) {
+    const key = warningKey(warningText);
+    const draft = resolveDrafts[key] || {};
+    const breakMinutes = Number(draft.break_minutes);
+    if (!Number.isFinite(breakMinutes) || breakMinutes < 0) {
+      setError("Enter verified break minutes (0 or more) to resolve this warning.");
+      return;
+    }
+    setForm((prev) => {
+      const labour_entries = prev.labour_entries.map((row) =>
+        row.confirmation_status === ROW_CONFIRMATION.EXCLUDED
+          ? row
+          : { ...row, break_minutes: breakMinutes }
+      );
+      return {
+        ...prev,
+        labour_entries,
+        warning_resolutions: upsertBreakWarningResolution(prev.warning_resolutions, warningText, {
+          breakMinutes,
+          resolutionNote: draft.resolution_note || "",
+        }),
+      };
+    });
+    setMessage("Lunch/break warning marked resolved. Save draft to persist.");
+    setError("");
   }
 
   async function reopen() {
@@ -223,11 +276,91 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
       {(form.warnings || []).length ? (
         <div className="warn" role="status">
           <strong>Warnings</strong>
-          <ul>
-            {form.warnings.map((w, i) => (
-              <li key={`w-${i}`}>{w}</li>
-            ))}
+          <ul className="warning-list">
+            {form.warnings.map((w, i) => {
+              const key = warningKey(w);
+              const resolved = isBreakWarningResolved(form.warning_resolutions, w);
+              const resolvable = isResolvableBreakWarning(w);
+              const draft = resolveDrafts[key] || {};
+              return (
+                <li key={`w-${i}`}>
+                  <div>{w}</div>
+                  {resolvable ? (
+                    resolved ? (
+                      <p className="ok small">
+                        Resolved — break{" "}
+                        {findWarningResolution(form.warning_resolutions, w)?.break_minutes ?? "—"}{" "}
+                        min
+                        {findWarningResolution(form.warning_resolutions, w)?.resolution_note
+                          ? ` · ${findWarningResolution(form.warning_resolutions, w).resolution_note}`
+                          : ""}
+                      </p>
+                    ) : !readOnly ? (
+                      <div className="warning-resolve">
+                        <div className="field">
+                          <label htmlFor={`resolve-break-${i}`}>Verified break (min)</label>
+                          <input
+                            id={`resolve-break-${i}`}
+                            type="number"
+                            min="0"
+                            value={draft.break_minutes ?? ""}
+                            disabled={busy}
+                            onChange={(e) =>
+                              setResolveDrafts((prev) => ({
+                                ...prev,
+                                [key]: {
+                                  ...prev[key],
+                                  break_minutes: e.target.value === "" ? "" : Number(e.target.value),
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="field">
+                          <label htmlFor={`resolve-note-${i}`}>Resolution note (optional)</label>
+                          <input
+                            id={`resolve-note-${i}`}
+                            value={draft.resolution_note || ""}
+                            disabled={busy}
+                            onChange={(e) =>
+                              setResolveDrafts((prev) => ({
+                                ...prev,
+                                [key]: { ...prev[key], resolution_note: e.target.value },
+                              }))
+                            }
+                          />
+                        </div>
+                        <button
+                          className="btn btn-ghost"
+                          type="button"
+                          disabled={busy}
+                          onClick={() => applyBreakResolution(w)}
+                        >
+                          Mark resolved
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="small muted">Unresolved — manager must confirm break minutes.</p>
+                    )
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
+          {!readOnly && needsOverrideReason(form) ? (
+            <div className="field" style={{ marginTop: 8 }}>
+              <label htmlFor="override-reason">
+                Override reason (for remaining non-critical warnings)
+              </label>
+              <textarea
+                id="override-reason"
+                rows={2}
+                value={overrideReason}
+                disabled={busy}
+                onChange={(e) => setOverrideReason(e.target.value)}
+              />
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -279,7 +412,18 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
 
           <h3>Labour</h3>
           <div className="completion-table" role="table" aria-label="Labour entries">
-            {form.labour_entries.map((row, index) => (
+            {form.labour_entries.map((row, index) => {
+              const allErrors = labourFieldErrors(row);
+              const fieldErrors = showFieldErrors
+                ? allErrors
+                : Object.fromEntries(
+                    Object.entries(allErrors).filter(
+                      ([field, message]) =>
+                        field === "break_minutes" ||
+                        message === "Use HH:MM."
+                    )
+                  );
+              return (
               <div className="completion-row" role="row" key={row.labour_id || `lab-${index}`}>
                 <div className="field">
                   <label htmlFor={`lab-staff-${index}`}>Staff</label>
@@ -290,27 +434,35 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
                     onChange={(e) => setLabour(index, { staff_name: e.target.value })}
                   />
                 </div>
-                <div className="field">
+                <div className={`field${fieldErrors.start_time ? " has-error" : ""}`}>
                   <label htmlFor={`lab-start-${index}`}>Start</label>
                   <input
                     id={`lab-start-${index}`}
                     type="time"
                     value={row.start_time || ""}
                     disabled={readOnly || busy}
+                    aria-invalid={!!fieldErrors.start_time}
                     onChange={(e) => setLabour(index, { start_time: e.target.value })}
                   />
+                  {fieldErrors.start_time ? (
+                    <span className="field-error" role="alert">{fieldErrors.start_time}</span>
+                  ) : null}
                 </div>
-                <div className="field">
+                <div className={`field${fieldErrors.finish_time ? " has-error" : ""}`}>
                   <label htmlFor={`lab-finish-${index}`}>Finish</label>
                   <input
                     id={`lab-finish-${index}`}
                     type="time"
                     value={row.finish_time || ""}
                     disabled={readOnly || busy}
+                    aria-invalid={!!fieldErrors.finish_time}
                     onChange={(e) => setLabour(index, { finish_time: e.target.value })}
                   />
+                  {fieldErrors.finish_time ? (
+                    <span className="field-error" role="alert">{fieldErrors.finish_time}</span>
+                  ) : null}
                 </div>
-                <div className="field">
+                <div className={`field${fieldErrors.break_minutes ? " has-error" : ""}`}>
                   <label htmlFor={`lab-break-${index}`}>Break (min)</label>
                   <input
                     id={`lab-break-${index}`}
@@ -318,8 +470,12 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
                     min="0"
                     value={row.break_minutes ?? 0}
                     disabled={readOnly || busy}
+                    aria-invalid={!!fieldErrors.break_minutes}
                     onChange={(e) => setLabour(index, { break_minutes: Number(e.target.value) })}
                   />
+                  {fieldErrors.break_minutes ? (
+                    <span className="field-error" role="alert">{fieldErrors.break_minutes}</span>
+                  ) : null}
                 </div>
                 <div className="field">
                   <label htmlFor={`lab-travel-${index}`}>Travel (min)</label>
@@ -336,7 +492,7 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
                   Net hours: {displayLabourHours(row) ?? "—"} · {row.confirmation_status}
                 </div>
                 {!readOnly ? (
-                  <div className="row-actions">
+                  <div className={`row-actions${fieldErrors.confirmation_status ? " has-error" : ""}`}>
                     <label>
                       <input
                         type="checkbox"
@@ -348,6 +504,7 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
                     </label>
                     <select
                       aria-label={`Labour confirmation ${index + 1}`}
+                      aria-invalid={!!fieldErrors.confirmation_status}
                       value={row.confirmation_status || ROW_CONFIRMATION.SUGGESTED}
                       disabled={busy}
                       onChange={(e) => setLabour(index, { confirmation_status: e.target.value })}
@@ -356,10 +513,16 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
                       <option value={ROW_CONFIRMATION.CONFIRMED}>Confirmed</option>
                       <option value={ROW_CONFIRMATION.EXCLUDED}>Excluded</option>
                     </select>
+                    {fieldErrors.confirmation_status ? (
+                      <span className="field-error" role="alert">
+                        {fieldErrors.confirmation_status}
+                      </span>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
-            ))}
+              );
+            })}
           </div>
           {!readOnly ? (
             <button

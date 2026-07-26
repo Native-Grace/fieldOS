@@ -274,3 +274,121 @@ def test_staff_read_filters_labour(client: TestClient) -> None:
     assert data["material_entries"] == []
     assert data["completion"]["internal_notes"] == ""
     assert data["can_edit"] is False
+
+
+def test_blank_and_malformed_labour_errors_are_unique() -> None:
+    from app.services.completion_math import compute_labour_entry, unique_messages, validate_for_finalise
+
+    blank = compute_labour_entry({"start_time": "", "finish_time": "", "break_minutes": 0})
+    assert blank["errors"] == ["Start time is required.", "Finish time is required."]
+    assert blank["warnings"] == []
+
+    malformed = compute_labour_entry({"start_time": "25:99", "finish_time": "noon", "break_minutes": 0})
+    assert malformed["errors"] == [
+        "Start time must use HH:MM.",
+        "Finish time must use HH:MM.",
+    ]
+    assert not any("required" in e.lower() for e in malformed["errors"])
+
+    job = {
+        "approval_status": "Approved",
+        "processing_status": "Completed",
+    }
+    gate = validate_for_finalise(
+        {
+            "completion_status": "Draft",
+            "work_summary": "Work",
+            "invoice_description": "Invoice",
+            "warnings": [],
+            "warning_resolutions": [],
+            "labour_entries": [
+                {
+                    "start_time": "",
+                    "finish_time": "",
+                    "break_minutes": 0,
+                    "confirmation_status": "Confirmed",
+                }
+            ],
+            "machinery_entries": [],
+            "material_entries": [],
+        },
+        job,
+    )
+    assert gate["ok"] is False
+    assert len(gate["critical_errors"]) == len(unique_messages(gate["critical_errors"]))
+    assert sum("Start time is required" in e for e in gate["critical_errors"]) == 1
+    assert sum("Finish time is required" in e for e in gate["critical_errors"]) == 1
+    assert not any("start_time and finish_time are required" in e for e in gate["critical_errors"])
+
+
+def test_resolved_lunch_allows_finalise_unresolved_blocks() -> None:
+    from app.services.completion_math import validate_for_finalise
+
+    lunch = "Contradictory lunch information in source text — confirm unpaid break manually."
+    job = {"approval_status": "Approved", "processing_status": "Completed"}
+    base = {
+        "completion_status": "Draft",
+        "work_summary": "Planted trees",
+        "invoice_description": "Seven trees",
+        "warnings": [lunch],
+        "labour_entries": [
+            {
+                "start_time": "07:00",
+                "finish_time": "15:00",
+                "break_minutes": 30,
+                "confirmation_status": "Confirmed",
+            }
+        ],
+        "machinery_entries": [],
+        "material_entries": [],
+    }
+    blocked = validate_for_finalise({**base, "warning_resolutions": []}, job, override_reason="ignore")
+    assert blocked["ok"] is False
+    assert any("Resolve lunch/break contradiction" in e for e in blocked["critical_errors"])
+
+    allowed = validate_for_finalise(
+        {
+            **base,
+            "warning_resolutions": [
+                {
+                    "warning_key": "contradictory_lunch",
+                    "warning_text": lunch,
+                    "resolved": True,
+                    "break_minutes": 30,
+                    "resolution_note": "Confirmed unpaid break",
+                }
+            ],
+        },
+        job,
+        override_reason="",
+    )
+    assert allowed["ok"] is True, allowed["critical_errors"]
+    assert allowed["totals"]["total_labour_hours"] == 7.5
+
+
+def test_invalid_arithmetic_cannot_be_overridden() -> None:
+    from app.services.completion_math import validate_for_finalise
+
+    gate = validate_for_finalise(
+        {
+            "completion_status": "Draft",
+            "work_summary": "Planted trees",
+            "invoice_description": "Seven trees",
+            "warnings": [],
+            "warning_resolutions": [],
+            "labour_entries": [
+                {
+                    "start_time": "08:00",
+                    "finish_time": "09:00",
+                    "break_minutes": 90,
+                    "confirmation_status": "Confirmed",
+                }
+            ],
+            "machinery_entries": [],
+            "material_entries": [],
+        },
+        {"approval_status": "Approved", "processing_status": "Completed"},
+        override_reason="Please allow this",
+    )
+    assert gate["ok"] is False
+    assert any("Break minutes cannot exceed" in e for e in gate["critical_errors"])

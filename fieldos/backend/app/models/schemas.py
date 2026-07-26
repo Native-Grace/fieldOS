@@ -180,6 +180,7 @@ class JobCompletionOut(BaseModel):
     non_billable_labour_hours: float = 0
     variations: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    warning_resolutions: List[Dict[str, Any]] = Field(default_factory=list)
     created_by: str = ""
     created_at: Optional[Union[datetime, str]] = None
     updated_by: str = ""
@@ -229,6 +230,7 @@ class CompletionUpdateRequest(BaseModel):
     internal_notes: Optional[str] = None
     variations: Optional[List[str]] = None
     warnings: Optional[List[str]] = None
+    warning_resolutions: Optional[List[Dict[str, Any]]] = None
     completion_status: Optional[str] = None
     labour_entries: Optional[List[LabourEntry]] = None
     machinery_entries: Optional[List[MachineryEntry]] = None

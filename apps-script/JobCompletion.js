@@ -18,6 +18,7 @@ var FIELDOS_COMPLETION_HEADERS_ = [
   "non_billable_labour_hours",
   "variations",
   "warnings",
+  "warning_resolutions",
   "created_by",
   "created_at",
   "updated_by",
@@ -183,10 +184,27 @@ var FieldOSJobCompletion = {
       .filter(Boolean);
   },
 
+  /** Parse JSON arrays of objects (warning_resolutions). */
+  _parseObjectList: function (raw) {
+    if (raw == null || raw === "") return [];
+    if (Array.isArray(raw)) return raw;
+    try {
+      const parsed = JSON.parse(String(raw));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  },
+
   _normaliseLabourRow: function (row, completionId, jobSheetId, now) {
     const calc = fieldosComputeLabourEntry_(row);
-    if (!calc.ok && calc.errors.length) {
-      throw new Error("Validation Error: " + calc.errors.join(" "));
+    // Drafts may keep blank start/finish. Only block malformed/arithmetic errors here.
+    // Finalise gate still requires times via fieldosValidateCompletionForFinalise_.
+    const blocking = (calc.errors || []).filter(function (e) {
+      return !/Start time is required\.|Finish time is required\./.test(String(e));
+    });
+    if (blocking.length) {
+      throw new Error("Validation Error: " + blocking.join(" "));
     }
     return {
       labour_id: String(row.labour_id || DB.generateId("LAB")),
@@ -373,6 +391,7 @@ var FieldOSJobCompletion = {
         non_billable_labour_hours: Number(header.non_billable_labour_hours) || 0,
         variations: this._parseList(header.variations),
         warnings: this._parseList(header.warnings),
+        warning_resolutions: this._parseObjectList(header.warning_resolutions),
         created_by: String(header.created_by || ""),
         created_at: header.created_at || null,
         updated_by: String(header.updated_by || ""),
@@ -456,8 +475,12 @@ var FieldOSJobCompletion = {
 
   _applyTotals: function (patch, labour, machinery) {
     const totals = fieldosComputeCompletionTotals_(labour, machinery);
-    if (!totals.ok) {
-      throw new Error("Validation Error: " + totals.errors.join(" "));
+    // Blank start/finish are allowed on drafts; finalise validates required times.
+    const blocking = (totals.errors || []).filter(function (e) {
+      return !/Start time is required\.|Finish time is required\./.test(String(e));
+    });
+    if (blocking.length) {
+      throw new Error("Validation Error: " + blocking.join(" "));
     }
     patch.total_labour_hours = totals.total_labour_hours;
     patch.total_travel_hours = totals.total_travel_hours;
@@ -557,6 +580,7 @@ var FieldOSJobCompletion = {
         non_billable_labour_hours: 0,
         variations: "",
         warnings: "",
+        warning_resolutions: "",
         created_by: actor,
         created_at: now,
         updated_by: actor,
@@ -725,6 +749,7 @@ var FieldOSJobCompletion = {
           non_billable_labour_hours: 0,
           variations: self._serializeList(draft.variations),
           warnings: self._serializeList(draft.warnings),
+          warning_resolutions: "",
           created_by: actor,
           created_at: now,
           updated_by: actor,
@@ -746,6 +771,7 @@ var FieldOSJobCompletion = {
         header.invoice_description = draft.invoice_description;
         header.variations = self._serializeList(draft.variations);
         header.warnings = self._serializeList(draft.warnings);
+        header.warning_resolutions = "";
         header.updated_by = actor;
         header.updated_at = now;
         header.version = Number(header.version || 1) + 1;
@@ -758,6 +784,7 @@ var FieldOSJobCompletion = {
           invoice_description: header.invoice_description,
           variations: header.variations,
           warnings: header.warnings,
+          warning_resolutions: header.warning_resolutions,
           updated_by: header.updated_by,
           updated_at: header.updated_at,
           version: header.version,
@@ -890,6 +917,10 @@ var FieldOSJobCompletion = {
             : header.variations,
         warnings:
           payload.warnings != null ? self._serializeList(payload.warnings) : header.warnings,
+        warning_resolutions:
+          payload.warning_resolutions != null
+            ? self._serializeList(payload.warning_resolutions)
+            : header.warning_resolutions,
         completion_status: nextStatus,
         updated_by: actor,
         updated_at: now,
@@ -941,12 +972,14 @@ var FieldOSJobCompletion = {
         work_summary: header.work_summary,
         invoice_description: header.invoice_description,
         warnings: self._parseList(header.warnings),
+        warning_resolutions: self._parseObjectList(header.warning_resolutions),
         labour_entries: (children.labour_entries || []).map(self._toApiLabour.bind(self)),
         machinery_entries: (children.machinery_entries || []).map(self._toApiMachinery.bind(self)),
         material_entries: (children.material_entries || []).map(self._toApiMaterial.bind(self))
       };
       const gate = fieldosValidateCompletionForFinalise_(assembled, job, {
-        override_reason: payload.override_reason
+        override_reason: payload.override_reason,
+        warning_resolutions: assembled.warning_resolutions
       });
       if (!gate.ok) {
         throw new Error("Validation Error: " + gate.criticalErrors.join(" "));

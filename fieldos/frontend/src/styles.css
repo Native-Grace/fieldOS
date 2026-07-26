@@ -345,6 +345,30 @@ audio {
   margin-bottom: 8px;
 }
 
+.field-error {
+  display: block;
+  color: var(--danger);
+  font-size: 0.8rem;
+  margin-top: 4px;
+}
+
+.field.has-error input,
+.field.has-error select,
+.row-actions.has-error select {
+  border-color: var(--danger);
+}
+
+.warning-list {
+  margin: 8px 0 0;
+  padding-left: 1.1rem;
+}
+
+.warning-resolve {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
 @media (min-width: 720px) {
   .app-shell { max-width: 720px; }
   .completion-row {

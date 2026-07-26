@@ -122,12 +122,16 @@ Block when:
 
 - job not Approved / not Completed
 - missing work_summary or invoice_description
-- invalid time arithmetic
+- invalid time arithmetic (cannot be overridden)
+- blank or malformed start/finish (blank → required; non-empty invalid → HH:MM only)
 - Suggested rows remain
-- unresolved contradictory warnings without `override_reason`
+- unresolved lunch/break contradiction warnings (must Mark resolved with verified `break_minutes`)
+- unresolved non-critical ack warnings without `override_reason`
 - already Finalised / stale version
 
-Override allowed only for non-arithmetic warning classes; actor + reason audited.
+`override_reason` is only for remaining non-critical acknowledgements (e.g. incomplete
+fragments / “all day”). Explicitly resolving a lunch contradiction does **not** require
+a generic override. Arithmetic and missing/invalid times must be corrected.
 
 ## Audit
 
