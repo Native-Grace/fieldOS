@@ -253,6 +253,54 @@ class JobService:
         )
         return result
 
+    async def completion_dashboard(self, staff_id: str, actor_role: str, filters: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(self.repo, AppsScriptJobRepository):
+            return await self.repo.acompletion_dashboard(actor_role, staff_id, filters)
+        return await self.repo.acompletion_dashboard(actor_role, filters)
+
+    async def completion_dashboard_summary(
+        self, staff_id: str, actor_role: str, filters: dict[str, Any]
+    ) -> dict[str, Any]:
+        if isinstance(self.repo, AppsScriptJobRepository):
+            return await self.repo.acompletion_dashboard_summary(actor_role, staff_id, filters)
+        return await self.repo.acompletion_dashboard_summary(actor_role, filters)
+
+    async def completion_export_readiness(
+        self, staff_id: str, actor_role: str, completion_id: str
+    ) -> dict[str, Any]:
+        if isinstance(self.repo, AppsScriptJobRepository):
+            return await self.repo.acompletion_export_readiness(actor_role, staff_id, completion_id)
+        return await self.repo.acompletion_export_readiness(actor_role, completion_id)
+
+    async def export_action(
+        self,
+        action: str,
+        *,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            **body,
+            "staff_id": staff_id,
+            "actor_staff_id": staff_id,
+            "actor_role": actor_role,
+            "actor_identity": actor_identity,
+        }
+        result = await self.repo.aexport_action(action, payload)
+        log_extra(
+            logger,
+            20,
+            "Export batch action",
+            action=action,
+            staff_id=staff_id,
+            actor_role=actor_role,
+            export_batch_id=str(body.get("export_batch_id") or ""),
+            export_type=str(body.get("export_type") or ""),
+        )
+        return result
+
     async def save_recording(
         self,
         job_sheet_id: str,

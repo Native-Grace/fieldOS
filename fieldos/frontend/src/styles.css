@@ -371,9 +371,137 @@ audio {
 
 @media (min-width: 720px) {
   .app-shell { max-width: 720px; }
+  .app-shell:has(.dashboard-page) { max-width: 1100px; }
   .completion-row {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px 12px;
+  }
+}
+
+.ok-box {
+  background: #e7f6ec;
+  color: var(--ok);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0 12px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.metric-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+}
+
+.metric-label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.metric-value {
+  font-size: 1.25rem;
+  font-weight: 750;
+  margin-top: 4px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #d7e2da;
+  vertical-align: top;
+}
+
+.data-table th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.batch-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.batch-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: #eef4ef;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.selected-batch {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #d7e2da;
+}
+
+.badge.ok { background: #d9f0e1; color: var(--ok); }
+.badge.warn { background: #f7e7c8; color: var(--warn); }
+.badge.muted { background: #e4ebe5; color: var(--muted); }
+
+.field select {
+  border: 1px solid #c5d2c8;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
+  font: inherit;
+}
+
+@media (min-width: 720px) {
+  .filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .metric-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 960px) {
+  .filter-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }

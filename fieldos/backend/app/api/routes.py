@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 
 from app.core.config import Settings, get_settings
 from app.core.roles import actor_identity, is_manager_or_admin, normalize_role, require_manager_or_admin
@@ -13,6 +13,13 @@ from app.models.schemas import (
     CompletionListResponse,
     CompletionReopenRequest,
     CompletionUpdateRequest,
+    CreateExportBatchRequest,
+    DashboardResponse,
+    DashboardSummaryResponse,
+    ExportBatchListResponse,
+    ExportBatchResponse,
+    ExportBatchVersionRequest,
+    ExportReadinessResponse,
     HealthResponse,
     InvalidateRecordingRequest,
     JobCompletionOut,
@@ -473,6 +480,287 @@ async def list_completions(
         items=[CompletionListItem.model_validate(item) for item in (result.get("items") or [])],
         data_mode=settings.data_mode,
         assumptions=service.assumptions(),
+    )
+
+
+def _dashboard_filters(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    completion_status: Optional[str] = None,
+    approval_status: Optional[str] = None,
+    customer: Optional[str] = None,
+    project: Optional[str] = None,
+    assigned_staff_id: Optional[str] = None,
+    billable: Optional[bool] = None,
+    q: Optional[str] = None,
+) -> dict:
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "completion_status": completion_status,
+        "approval_status": approval_status,
+        "customer": customer,
+        "project": project,
+        "assigned_staff_id": assigned_staff_id,
+        "billable": billable,
+        "q": q,
+    }
+
+
+@router.get("/completions/dashboard", response_model=DashboardResponse)
+async def completions_dashboard(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    completion_status: Optional[str] = Query(None),
+    approval_status: Optional[str] = Query(None),
+    customer: Optional[str] = Query(None),
+    project: Optional[str] = Query(None),
+    assigned_staff_id: Optional[str] = Query(None),
+    billable: Optional[bool] = Query(None),
+    q: Optional[str] = Query(None),
+) -> DashboardResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.completion_dashboard(
+        str(claims["sub"]),
+        role,
+        _dashboard_filters(
+            date_from,
+            date_to,
+            completion_status,
+            approval_status,
+            customer,
+            project,
+            assigned_staff_id,
+            billable,
+            q,
+        ),
+    )
+    from app.models.schemas import DashboardItem, DashboardSummary
+
+    return DashboardResponse(
+        items=[DashboardItem.model_validate(item) for item in (result.get("items") or [])],
+        filters=result.get("filters") or {},
+        summary=DashboardSummary.model_validate(result.get("summary") or {}),
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/completions/dashboard/summary", response_model=DashboardSummaryResponse)
+async def completions_dashboard_summary(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    completion_status: Optional[str] = Query(None),
+    approval_status: Optional[str] = Query(None),
+    customer: Optional[str] = Query(None),
+    project: Optional[str] = Query(None),
+    assigned_staff_id: Optional[str] = Query(None),
+    billable: Optional[bool] = Query(None),
+    q: Optional[str] = Query(None),
+) -> DashboardSummaryResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.completion_dashboard_summary(
+        str(claims["sub"]),
+        role,
+        _dashboard_filters(
+            date_from,
+            date_to,
+            completion_status,
+            approval_status,
+            customer,
+            project,
+            assigned_staff_id,
+            billable,
+            q,
+        ),
+    )
+    from app.models.schemas import DashboardSummary
+
+    return DashboardSummaryResponse(
+        summary=DashboardSummary.model_validate(result.get("summary") or {}),
+        filters=result.get("filters") or {},
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/completions/{completion_id}/readiness", response_model=ExportReadinessResponse)
+async def completion_export_readiness(
+    completion_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ExportReadinessResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.completion_export_readiness(str(claims["sub"]), role, completion_id)
+    from app.models.schemas import ExportReadiness
+
+    return ExportReadinessResponse(
+        completion_id=str(result.get("completion_id") or completion_id),
+        job_sheet_id=str(result.get("job_sheet_id") or ""),
+        readiness=ExportReadiness.model_validate(result.get("readiness") or {}),
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+def _export_batch_response(result: dict, settings: Settings, service: JobService) -> ExportBatchResponse:
+    from app.models.schemas import ExportBatchItemOut, ExportBatchOut
+
+    batch = result.get("export_batch") or result
+    return ExportBatchResponse(
+        export_batch=ExportBatchOut.model_validate(batch),
+        items=[ExportBatchItemOut.model_validate(item) for item in (result.get("items") or [])],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/exports", response_model=ExportBatchListResponse)
+async def list_exports(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ExportBatchListResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.export_action(
+        "list_export_batches",
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body={},
+    )
+    from app.models.schemas import ExportBatchListItem
+
+    return ExportBatchListResponse(
+        items=[ExportBatchListItem.model_validate(item) for item in (result.get("items") or [])],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/exports", response_model=ExportBatchResponse)
+async def create_export(
+    body: CreateExportBatchRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ExportBatchResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.export_action(
+        "create_export_batch",
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=body.model_dump(exclude_none=True),
+    )
+    return _export_batch_response(result, settings, service)
+
+
+@router.get("/exports/{export_batch_id}", response_model=ExportBatchResponse)
+async def get_export(
+    export_batch_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ExportBatchResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.export_action(
+        "get_export_batch",
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body={"export_batch_id": export_batch_id},
+    )
+    return _export_batch_response(result, settings, service)
+
+
+@router.post("/exports/{export_batch_id}/validate", response_model=ExportBatchResponse)
+async def validate_export(
+    export_batch_id: str,
+    body: ExportBatchVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ExportBatchResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.export_action(
+        "validate_export_batch",
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body={"export_batch_id": export_batch_id, **body.model_dump(exclude_none=True)},
+    )
+    return _export_batch_response(result, settings, service)
+
+
+@router.post("/exports/{export_batch_id}/generate", response_model=ExportBatchResponse)
+async def generate_export(
+    export_batch_id: str,
+    body: ExportBatchVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ExportBatchResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.export_action(
+        "generate_export_batch",
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body={"export_batch_id": export_batch_id, **body.model_dump(exclude_none=True)},
+    )
+    return _export_batch_response(result, settings, service)
+
+
+@router.post("/exports/{export_batch_id}/cancel", response_model=ExportBatchResponse)
+async def cancel_export(
+    export_batch_id: str,
+    body: ExportBatchVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ExportBatchResponse:
+    role = require_manager_or_admin(claims)
+    result = await service.export_action(
+        "cancel_export_batch",
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body={"export_batch_id": export_batch_id, **body.model_dump(exclude_none=True)},
+    )
+    return _export_batch_response(result, settings, service)
+
+
+@router.get("/exports/{export_batch_id}/download")
+async def download_export(
+    export_batch_id: str,
+    claims: dict = Depends(get_current_claims),
+    service: JobService = Depends(job_service),
+):
+    role = require_manager_or_admin(claims)
+    result = await service.export_action(
+        "get_export_batch_csv",
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body={"export_batch_id": export_batch_id},
+    )
+    csv_text = str(result.get("csv_text") or "")
+    file_name = str(result.get("file_name") or "export.csv").replace('"', "")
+    return Response(
+        content=csv_text.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_name}"',
+            "X-Export-Checksum": str(result.get("checksum") or ""),
+        },
     )
 
 

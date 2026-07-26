@@ -10,6 +10,10 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const helpersSrc = fs.readFileSync(
+  path.join(__dirname, "..", "JobCompletionHelpers.js"),
+  "utf8"
+);
 const gatewaySrc = fs.readFileSync(
   path.join(__dirname, "..", "FieldOSGateway.js"),
   "utf8"
@@ -126,6 +130,7 @@ function loadGateway(harness) {
     }),
   };
   vm.createContext(context);
+  vm.runInContext(helpersSrc, context);
   vm.runInContext(gatewaySrc, context);
   return context;
 }

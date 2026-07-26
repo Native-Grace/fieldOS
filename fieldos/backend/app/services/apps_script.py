@@ -287,6 +287,22 @@ class AppsScriptClient:
         safe_body = redact_secrets(body)
         return await self._post("list_job_completions", {**safe_body, **self._column_payload()})
 
+    async def list_completion_dashboard(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("list_completion_dashboard", {**safe_body, **self._column_payload()})
+
+    async def get_completion_dashboard_summary(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("get_completion_dashboard_summary", {**safe_body, **self._column_payload()})
+
+    async def get_completion_export_readiness(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("get_completion_export_readiness", {**safe_body, **self._column_payload()})
+
+    async def export_batch_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post(action, {**safe_body, **self._column_payload()})
+
     async def register_recording(self, body: dict[str, Any]) -> dict[str, Any]:
         safe_body = redact_secrets(body)
         return await self._post("register_recording", {**safe_body, **self._column_payload()})

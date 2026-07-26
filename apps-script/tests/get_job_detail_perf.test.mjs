@@ -17,6 +17,10 @@ const displaySrc = fs.readFileSync(
   path.join(__dirname, "..", "FieldOSDisplayLookup.js"),
   "utf8"
 );
+const helpersSrc = fs.readFileSync(
+  path.join(__dirname, "..", "JobCompletionHelpers.js"),
+  "utf8"
+);
 const gatewaySrc = fs.readFileSync(
   path.join(__dirname, "..", "FieldOSGateway.js"),
   "utf8"
@@ -124,6 +128,7 @@ function buildContext(harness) {
   };
   vm.createContext(context);
   vm.runInContext(displaySrc, context);
+  vm.runInContext(helpersSrc, context);
   vm.runInContext(gatewaySrc, context);
   return context;
 }

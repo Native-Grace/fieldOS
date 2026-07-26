@@ -86,6 +86,26 @@ function fieldosRouteRequest(payload) {
       return FieldOSJobCompletion.reopenJobCompletion(payload);
     case "list_job_completions":
       return FieldOSJobCompletion.listJobCompletions(payload);
+    case "list_completion_dashboard":
+      return FieldOSCompletionExports.listCompletionDashboard(payload);
+    case "get_completion_dashboard_summary":
+      return FieldOSCompletionExports.getCompletionDashboardSummary(payload);
+    case "get_completion_export_readiness":
+      return FieldOSCompletionExports.getCompletionExportReadiness(payload);
+    case "create_export_batch":
+      return FieldOSCompletionExports.createExportBatch(payload);
+    case "list_export_batches":
+      return FieldOSCompletionExports.listExportBatches(payload);
+    case "get_export_batch":
+      return FieldOSCompletionExports.getExportBatch(payload);
+    case "validate_export_batch":
+      return FieldOSCompletionExports.validateExportBatch(payload);
+    case "generate_export_batch":
+      return FieldOSCompletionExports.generateExportBatch(payload);
+    case "get_export_batch_csv":
+      return FieldOSCompletionExports.getExportBatchCsv(payload);
+    case "cancel_export_batch":
+      return FieldOSCompletionExports.cancelExportBatch(payload);
     default:
       return null;
   }
@@ -268,14 +288,7 @@ var FieldOSGateway = {
 
   _normalizeJob: function(job, cols, displayMaps) {
     const dateRaw = job[cols.date] || "";
-    let jobDate = "";
-    if (dateRaw) {
-      if (Object.prototype.toString.call(dateRaw) === "[object Date]") {
-        jobDate = Utilities.formatDate(dateRaw, Session.getScriptTimeZone(), "yyyy-MM-dd");
-      } else {
-        jobDate = String(dateRaw).slice(0, 10);
-      }
-    }
+    let jobDate = fieldosNormaliseCalendarDate_(dateRaw) || "";
 
     const projectKey = String(job[cols.project] || "").trim();
     // Dual-read: project_id PK → exact/normalised project_name → raw fallback.

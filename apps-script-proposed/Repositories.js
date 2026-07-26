@@ -19,6 +19,8 @@ const JobCompletionRepository = new BaseRepository('tbl_job_completions', 'compl
 const JobLabourRepository = new BaseRepository('tbl_job_labour', 'labour_id', 'LAB');
 const JobMachineryRepository = new BaseRepository('tbl_job_machinery', 'machinery_entry_id', 'MCH');
 const JobMaterialEntryRepository = new BaseRepository('tbl_job_materials', 'material_entry_id', 'JMT');
+const ExportBatchRepository = new BaseRepository('tbl_export_batches', 'export_batch_id', 'EXP');
+const ExportBatchItemRepository = new BaseRepository('tbl_export_batch_items', 'export_batch_item_id', 'EXI');
 
 const RecordingRepository = new BaseRepository({
   tableName: 'tbl_recordings',

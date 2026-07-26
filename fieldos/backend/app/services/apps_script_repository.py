@@ -249,6 +249,57 @@ class AppsScriptJobRepository:
         items = data.get("items") if isinstance(data.get("items"), list) else []
         return {"items": [item for item in items if isinstance(item, dict)]}
 
+    async def acompletion_dashboard(self, actor_role: str, staff_id: str, filters: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.list_completion_dashboard(
+                {"actor_role": actor_role, "staff_id": staff_id, "actor_staff_id": staff_id, **filters}
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return data
+
+    async def acompletion_dashboard_summary(
+        self, actor_role: str, staff_id: str, filters: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.get_completion_dashboard_summary(
+                {"actor_role": actor_role, "staff_id": staff_id, "actor_staff_id": staff_id, **filters}
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return data
+
+    async def acompletion_export_readiness(
+        self, actor_role: str, staff_id: str, completion_id: str
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.get_completion_export_readiness(
+                {
+                    "actor_role": actor_role,
+                    "staff_id": staff_id,
+                    "actor_staff_id": staff_id,
+                    "completion_id": completion_id,
+                }
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return data
+
+    async def aexport_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.export_batch_action(action, body)
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return data
+
     async def acompletion_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         try:
             if action == "create_job_completion_draft":

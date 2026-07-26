@@ -251,3 +251,32 @@ class MockStore:
             rows.append(completion)
         self._write(self.completions_path, rows)
         return completion
+
+    @property
+    def export_batches_path(self) -> Path:
+        return self.root / "export_batches.json"
+
+    def list_export_batches(self) -> list[dict[str, Any]]:
+        if not self.export_batches_path.exists():
+            return []
+        return self._read(self.export_batches_path)
+
+    def get_export_batch(self, export_batch_id: str) -> dict[str, Any] | None:
+        for row in self.list_export_batches():
+            if str(row.get("export_batch_id")) == str(export_batch_id):
+                return row
+        return None
+
+    def upsert_export_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+        rows = self.list_export_batches()
+        batch_id = str(batch.get("export_batch_id") or "")
+        replaced = False
+        for idx, row in enumerate(rows):
+            if str(row.get("export_batch_id")) == batch_id:
+                rows[idx] = batch
+                replaced = True
+                break
+        if not replaced:
+            rows.append(batch)
+        self._write(self.export_batches_path, rows)
+        return batch

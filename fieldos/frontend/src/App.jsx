@@ -4,6 +4,7 @@ import LoginPage from "./pages/LoginPage";
 import JobsPage from "./pages/JobsPage";
 import JobDetailPage from "./pages/JobDetailPage";
 import RecorderPage from "./pages/RecorderPage";
+import CompletionsDashboardPage from "./pages/CompletionsDashboardPage";
 
 function Private({ children }) {
   if (!getToken()) return <Navigate to="/login" replace />;
@@ -20,6 +21,14 @@ export default function App() {
           element={
             <Private>
               <JobsPage />
+            </Private>
+          }
+        />
+        <Route
+          path="/completions"
+          element={
+            <Private>
+              <CompletionsDashboardPage />
             </Private>
           }
         />

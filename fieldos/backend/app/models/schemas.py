@@ -339,3 +339,147 @@ class ReadyResponse(BaseModel):
     data_mode: str
     checks: Dict[str, bool]
     message: str
+
+
+class DashboardFilters(BaseModel):
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    completion_status: Optional[str] = None
+    approval_status: Optional[str] = None
+    customer: Optional[str] = None
+    project: Optional[str] = None
+    assigned_staff_id: Optional[str] = None
+    billable: Optional[bool] = None
+    q: Optional[str] = None
+
+
+class DashboardItem(BaseModel):
+    job_date: str = ""
+    job_sheet_id: str
+    completion_id: str
+    customer_name: str = ""
+    project_name: str = ""
+    completion_status: str = ""
+    approval_status: str = ""
+    finalised_by: str = ""
+    finalised_at: Optional[Union[datetime, str]] = None
+    total_labour_hours: float = 0
+    total_travel_hours: float = 0
+    total_machinery_hours: float = 0
+    billable_labour_hours: float = 0
+    non_billable_labour_hours: float = 0
+    unresolved_warning_count: int = 0
+    invoice_ready: bool = False
+    payroll_ready: bool = False
+    export_status: str = ""
+    version: int = 1
+
+
+class DashboardSummary(BaseModel):
+    job_count: int = 0
+    finalised_jobs: int = 0
+    draft_or_reopened_jobs: int = 0
+    total_labour_hours: float = 0
+    total_travel_hours: float = 0
+    total_machinery_hours: float = 0
+    billable_labour_hours: float = 0
+    non_billable_labour_hours: float = 0
+    unresolved_warnings: int = 0
+    jobs_ready_for_invoice_export: int = 0
+    jobs_ready_for_payroll_export: int = 0
+
+
+class DashboardResponse(BaseModel):
+    items: List[DashboardItem]
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    summary: DashboardSummary
+    data_mode: str
+    assumptions: List[str]
+
+
+class DashboardSummaryResponse(BaseModel):
+    summary: DashboardSummary
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    data_mode: str
+    assumptions: List[str]
+
+
+class ExportReadiness(BaseModel):
+    invoice_ready: bool = False
+    invoice_blockers: List[str] = Field(default_factory=list)
+    payroll_ready: bool = False
+    payroll_blockers: List[str] = Field(default_factory=list)
+    warning_count: int = 0
+
+
+class ExportReadinessResponse(BaseModel):
+    completion_id: str
+    job_sheet_id: str = ""
+    readiness: ExportReadiness
+    data_mode: str
+    assumptions: List[str]
+
+
+class ExportBatchOut(BaseModel):
+    export_batch_id: str
+    export_type: str
+    date_from: str = ""
+    date_to: str = ""
+    filter_json: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "Draft"
+    record_count: int = 0
+    created_by: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    completed_at: Optional[Union[datetime, str]] = None
+    file_name: str = ""
+    checksum: str = ""
+    notes: str = ""
+    version: int = 1
+
+
+class ExportBatchItemOut(BaseModel):
+    export_batch_item_id: str
+    export_batch_id: str
+    job_sheet_id: str = ""
+    completion_id: str = ""
+    item_status: str = ""
+    blocker_summary: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+
+
+class ExportBatchResponse(BaseModel):
+    export_batch: ExportBatchOut
+    items: List[ExportBatchItemOut] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class ExportBatchListItem(BaseModel):
+    export_batch_id: str
+    export_type: str = ""
+    status: str = ""
+    record_count: int = 0
+    date_from: str = ""
+    date_to: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    file_name: str = ""
+    version: int = 1
+
+
+class ExportBatchListResponse(BaseModel):
+    items: List[ExportBatchListItem]
+    data_mode: str
+    assumptions: List[str]
+
+
+class CreateExportBatchRequest(BaseModel):
+    export_type: str = "Completion Summary CSV"
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    filters: Optional[Dict[str, Any]] = None
+    completion_ids: Optional[List[str]] = None
+    notes: Optional[str] = None
+
+
+class ExportBatchVersionRequest(BaseModel):
+    expected_version: Optional[int] = None

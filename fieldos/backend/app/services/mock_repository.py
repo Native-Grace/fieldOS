@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from app.core.config import Settings
 from app.services.apps_script import AppsScriptClient
 from app.services.mock_completion import MockCompletionMixin
+from app.services.mock_export import MockExportMixin
 from app.services.mock_store import MockStore
 
 MOCK_ASSUMPTIONS = [
@@ -22,7 +23,7 @@ MOCK_ASSUMPTIONS = [
 ]
 
 
-class MockJobRepository(MockCompletionMixin):
+class MockJobRepository(MockCompletionMixin, MockExportMixin):
     def __init__(self, settings: Settings, apps_script: AppsScriptClient | None = None):
         self.settings = settings
         self.store = MockStore(settings)

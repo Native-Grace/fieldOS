@@ -57,6 +57,38 @@ export async function api(path, options = {}) {
   return res.json();
 }
 
+/** Authenticated Blob download — token stays in Authorization header, never in the URL. */
+export async function downloadAuthenticatedFile(path, { fallbackName = "export.csv" } = {}) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`/api/v1${path}`, { headers });
+  if (res.status === 401) {
+    clearSession();
+    throw new ApiError("Session expired. Please sign in again.", 401);
+  }
+  if (!res.ok) {
+    throw new ApiError(await parseError(res), res.status);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = /filename="([^"]+)"/i.exec(disposition);
+  const fileName = match?.[1] || fallbackName;
+  return { blob, fileName };
+}
+
+export function triggerBrowserDownload(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** Upload with progress via XHR (fetch has no upload progress). */
 export function uploadRecording(
   jobSheetId,

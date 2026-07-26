@@ -131,3 +131,49 @@ function migrateSchemaForJobCompletion() {
   ensureTable("tbl_job_materials", FIELDOS_MATERIAL_HEADERS_);
   Logger.log("Phase 3C job completion migration completed.");
 }
+/**
+ * Phase 3D: ensure export-batch sheets exist with required headers.
+ * Non-destructive — creates missing tabs and appends missing columns only.
+ */
+function migrateSchemaForCompletionExports() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (!spreadsheetId) {
+    throw new Error("Migration Error: 'SPREADSHEET_ID' script property is missing or blank in Project Settings.");
+  }
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+
+  function ensureTable(sheetName, columns) {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.getRange(1, 1, 1, columns.length).setValues([columns]);
+      sheet
+        .getRange(1, 1, 1, columns.length)
+        .setFontWeight("bold")
+        .setBackground("#f3f3f3")
+        .setHorizontalAlignment("left");
+      sheet.autoResizeColumns(1, columns.length);
+      Logger.log("Success [" + sheetName + "]: Created sheet with headers.");
+      return;
+    }
+    const lastCol = sheet.getLastColumn();
+    const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+    let nextCol = lastCol + 1;
+    columns.forEach(function (colName) {
+      if (headers.indexOf(colName) >= 0) {
+        Logger.log("Notice [" + sheetName + "]: '" + colName + "' already exists. Skipping.");
+        return;
+      }
+      const cell = sheet.getRange(1, nextCol);
+      cell.setValue(colName);
+      cell.setFontWeight("bold").setBackground("#f3f3f3").setHorizontalAlignment("left");
+      sheet.autoResizeColumns(nextCol, 1);
+      Logger.log("Success [" + sheetName + "]: Added column -> " + colName);
+      nextCol += 1;
+    });
+  }
+
+  ensureTable("tbl_export_batches", FIELDOS_EXPORT_BATCH_HEADERS_);
+  ensureTable("tbl_export_batch_items", FIELDOS_EXPORT_ITEM_HEADERS_);
+  Logger.log("Phase 3D completion export migration completed.");
+}

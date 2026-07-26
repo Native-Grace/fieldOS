@@ -56,6 +56,139 @@ function fieldosIsDateObject_(value) {
 }
 
 /**
+ * Format a Date as YYYY-MM-DD in the spreadsheet timezone.
+ */
+function fieldosFormatYmdInTz_(dateObj, timezone) {
+  const tz = timezone || fieldosSpreadsheetTimeZone_();
+  if (!fieldosIsDateObject_(dateObj)) return null;
+  try {
+    if (typeof Utilities !== "undefined" && Utilities.formatDate) {
+      const formatted = Utilities.formatDate(dateObj, tz, "yyyy-MM-dd");
+      if (/^\d{4}-\d{2}-\d{2}$/.test(formatted)) return formatted;
+    }
+  } catch (e) {
+    /* fall through */
+  }
+  try {
+    if (typeof Intl !== "undefined" && Intl.DateTimeFormat) {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).formatToParts(dateObj);
+      const year = parts.find(function (p) {
+        return p.type === "year";
+      });
+      const month = parts.find(function (p) {
+        return p.type === "month";
+      });
+      const day = parts.find(function (p) {
+        return p.type === "day";
+      });
+      if (year && month && day) {
+        return year.value + "-" + month.value + "-" + day.value;
+      }
+    }
+  } catch (eIntl) {
+    /* fall through */
+  }
+  const y = dateObj.getFullYear();
+  const m = dateObj.getMonth() + 1;
+  const d = dateObj.getDate();
+  return (
+    y +
+    "-" +
+    (m < 10 ? "0" : "") +
+    m +
+    "-" +
+    (d < 10 ? "0" : "") +
+    d
+  );
+}
+
+/**
+ * Canonical calendar date → "YYYY-MM-DD" in spreadsheet timezone, or "".
+ * Accepts: Date (Sheets), YYYY-MM-DD, ISO datetime, locale Date strings.
+ * Never compare raw Date objects / locale strings to filter bounds.
+ */
+function fieldosNormaliseCalendarDate_(value, options) {
+  const opts = options || {};
+  const tz = opts.timezone || fieldosSpreadsheetTimeZone_();
+  if (value == null || value === "") return "";
+
+  if (fieldosIsDateObject_(value)) {
+    return fieldosFormatYmdInTz_(value, tz) || "";
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    // Sheets serial day number (days since 1899-12-30). Only accept plausible date serials.
+    if (value >= 1 && value < 100000) {
+      const excelEpochUtc = Date.UTC(1899, 11, 30);
+      const millis = excelEpochUtc + Math.round(value) * 86400000;
+      const asDate = new Date(millis);
+      if (!isNaN(asDate.getTime())) return fieldosFormatYmdInTz_(asDate, "UTC") || "";
+    }
+    return "";
+  }
+
+  const s = String(value).trim();
+  if (!s) return "";
+
+  // Already canonical calendar date (optionally with time suffix we ignore only if ISO).
+  const ymdOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (ymdOnly) return ymdOnly[1] + "-" + ymdOnly[2] + "-" + ymdOnly[3];
+
+  // ISO / RFC datetime → calendar date in spreadsheet TZ.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+    const parsedIso = new Date(s);
+    if (!isNaN(parsedIso.getTime())) return fieldosFormatYmdInTz_(parsedIso, tz) || "";
+  }
+
+  // Locale Date string, e.g. "Thu Jul 16 2026 00:00:00 GMT+1000 (Australian Eastern Standard Time)"
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) return fieldosFormatYmdInTz_(parsed, tz) || "";
+
+  // Last resort: leading YYYY-MM-DD prefix only when the rest is clearly a datetime separator.
+  const leading = /^(\d{4}-\d{2}-\d{2})\b/.exec(s);
+  if (leading && /[T\s]/.test(s.charAt(10) || "")) return leading[1];
+
+  return "";
+}
+
+/**
+ * Inclusive YYYY-MM-DD range check. Empty bounds are ignored.
+ */
+function fieldosDateInInclusiveRange_(ymd, dateFrom, dateTo) {
+  const d = fieldosNormaliseCalendarDate_(ymd);
+  if (!d) return true; // no comparable date → do not exclude on date alone
+  const from = fieldosNormaliseCalendarDate_(dateFrom);
+  const to = fieldosNormaliseCalendarDate_(dateTo);
+  if (from && d < from) return false;
+  if (to && d > to) return false;
+  return true;
+}
+
+/**
+ * Sanitised calendar-date diagnostic — type + normalised only.
+ */
+function fieldosDescribeCalendarDate_(value) {
+  let type = "null";
+  if (value === undefined) type = "undefined";
+  else if (value === null) type = "null";
+  else if (value === "") type = "empty_string";
+  else if (fieldosIsDateObject_(value)) type = "Date";
+  else if (typeof value === "number") type = "number";
+  else type = typeof value;
+  const normalised = fieldosNormaliseCalendarDate_(value);
+  return {
+    type: type,
+    normalised: normalised,
+    ok: /^\d{4}-\d{2}-\d{2}$/.test(normalised)
+  };
+}
+
+/**
  * Sanitised clock diagnostic — type + normalised only (no notes / rows).
  */
 function fieldosDescribeClockTime_(value) {
@@ -552,7 +685,7 @@ function fieldosBuildCompletionDraftFromJob_(job, options) {
   const warnings = fieldosCompletionSourceWarnings_(job);
   const staffId = String((job && (job.assigned_staff_id || job.staff_id)) || "").trim();
   const staffName = String(opts.staff_name || "").trim();
-  const workDate = String((job && (job.job_date || job.date)) || "").trim().slice(0, 10);
+  const workDate = fieldosNormaliseCalendarDate_((job && (job.job_date || job.date)) || "");
   const summary = String((job && job.ai_summary) || "").trim();
   const variationsRaw = String((job && job.variations) || "").trim();
   const travelRaw = String((job && job.travel_time) || "").trim();

@@ -79,6 +79,11 @@ export default function JobsPage() {
           </p>
         </div>
         <div className="topbar-actions">
+          {manager && (
+            <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/completions">
+              Completions
+            </Link>
+          )}
           <label className="range-select">
             <span className="visually-hidden">Date range</span>
             <select
