@@ -16,9 +16,11 @@ from app.services.completion_math import (
     STATUS_READY,
     STATUS_REOPENED,
     build_completion_draft_from_job,
+    clock_time_present,
     compute_completion_totals,
     compute_labour_entry,
     compute_machinery_duration_hours,
+    normalise_clock_time,
     validate_for_finalise,
 )
 
@@ -32,7 +34,24 @@ def _bool(value: Any) -> bool:
 
 
 def _normalise_labour(row: dict[str, Any], completion_id: str, job_sheet_id: str, now: str) -> dict[str, Any]:
-    calc = compute_labour_entry(row)
+    start_canonical = (
+        normalise_clock_time(row.get("start_time")) if clock_time_present(row.get("start_time")) else ""
+    ) or ""
+    finish_canonical = (
+        normalise_clock_time(row.get("finish_time")) if clock_time_present(row.get("finish_time")) else ""
+    ) or ""
+    calc = compute_labour_entry(
+        {
+            "start_time": start_canonical
+            if start_canonical
+            else ("invalid" if clock_time_present(row.get("start_time")) else ""),
+            "finish_time": finish_canonical
+            if finish_canonical
+            else ("invalid" if clock_time_present(row.get("finish_time")) else ""),
+            "break_minutes": row.get("break_minutes"),
+            "travel_minutes": row.get("travel_minutes"),
+        }
+    )
     # Drafts may keep blank start/finish. Finalise still requires times.
     blocking = [
         err
@@ -48,8 +67,8 @@ def _normalise_labour(row: dict[str, Any], completion_id: str, job_sheet_id: str
         "staff_id": str(row.get("staff_id") or ""),
         "staff_name": str(row.get("staff_name") or ""),
         "work_date": str(row.get("work_date") or "")[:10],
-        "start_time": str(row.get("start_time") or ""),
-        "finish_time": str(row.get("finish_time") or ""),
+        "start_time": start_canonical,
+        "finish_time": finish_canonical,
         "break_minutes": float(row.get("break_minutes") or 0),
         "labour_hours": calc["labour_hours"],
         "travel_minutes": float(row.get("travel_minutes") or 0),

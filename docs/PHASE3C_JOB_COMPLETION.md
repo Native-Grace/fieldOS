@@ -90,6 +90,10 @@ Concurrency token: `expected_version`.
 
 For each labour row:
 
+- Clock values are normalised to canonical **HH:MM** (24h) before validation / persistence /
+  API responses. Accepted: `07:00`, `7:00`, Sheets `Date`, ISO datetime (incl. Excel-epoch
+  `1899-12-30T…`), Sheets fraction `7/24`. Rejected: `7`, `morning`, `7ish`, `7am to 5pm`.
+  Dates are formatted with the spreadsheet timezone so local 07:00 is not UTC-shifted.
 - `gross_minutes = finish - start` (same-day only; overnight not supported)
 - `net_labour_minutes = gross_minutes - break_minutes`
 - `labour_hours` derived server-side (2 d.p. display)

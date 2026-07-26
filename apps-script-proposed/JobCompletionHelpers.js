@@ -18,15 +18,209 @@ var FIELDOS_ROW_CONFIRMATION_ = {
 
 var FIELDOS_MAX_SHIFT_HOURS_ = 12;
 
+/** Fallback when spreadsheet / script timezone is unavailable (Native Grace). */
+var FIELDOS_DEFAULT_TIMEZONE_ = "Australia/Sydney";
+
 /**
- * Parse HH:MM or H:MM into minutes from midnight. Returns null if invalid.
+ * Spreadsheet timezone for clock formatting — avoids UTC hour shifts.
+ */
+function fieldosSpreadsheetTimeZone_() {
+  try {
+    if (typeof SpreadsheetApp !== "undefined" && typeof Config !== "undefined") {
+      const ss = SpreadsheetApp.openById(Config.getSpreadsheetId());
+      if (ss && ss.getSpreadsheetTimeZone) return ss.getSpreadsheetTimeZone();
+    }
+  } catch (e1) {
+    /* fall through */
+  }
+  try {
+    if (typeof Session !== "undefined" && Session.getScriptTimeZone) {
+      return Session.getScriptTimeZone();
+    }
+  } catch (e2) {
+    /* fall through */
+  }
+  return FIELDOS_DEFAULT_TIMEZONE_;
+}
+
+function fieldosPadClock_(hours, minutes) {
+  const h = Number(hours);
+  const m = Number(minutes);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;
+}
+
+function fieldosIsDateObject_(value) {
+  return Object.prototype.toString.call(value) === "[object Date]" && !isNaN(value.getTime());
+}
+
+/**
+ * Sanitised clock diagnostic — type + normalised only (no notes / rows).
+ */
+function fieldosDescribeClockTime_(value) {
+  let type = "null";
+  if (value === undefined) type = "undefined";
+  else if (value === null) type = "null";
+  else if (value === "") type = "empty_string";
+  else if (fieldosIsDateObject_(value)) type = "Date";
+  else type = typeof value;
+  const normalised = fieldosNormaliseClockTime_(value);
+  return {
+    type: type,
+    normalised: normalised,
+    ok: normalised != null && normalised !== ""
+  };
+}
+
+/**
+ * Canonical clock normaliser → "HH:MM" (24h) or null.
+ * Accepts: "07:00", "7:00", Date (Sheets), ISO datetime, Sheets fraction [0, 1).
+ * Rejects: "7", "morning", "7ish", "7am", "7am to 5pm", other free text.
+ */
+function fieldosNormaliseClockTime_(value, options) {
+  const opts = options || {};
+  if (value == null || value === "") return null;
+
+  // Sheets / Apps Script Date from time-formatted cells.
+  if (fieldosIsDateObject_(value)) {
+    const tz = opts.timezone || fieldosSpreadsheetTimeZone_();
+    try {
+      if (typeof Utilities !== "undefined" && Utilities.formatDate) {
+        const formatted = Utilities.formatDate(value, tz, "HH:mm");
+        if (/^([01]\d|2[0-3]):[0-5]\d$/.test(formatted)) return formatted;
+      }
+    } catch (e) {
+      /* fall through */
+    }
+    try {
+      if (typeof Intl !== "undefined" && Intl.DateTimeFormat) {
+        const parts = new Intl.DateTimeFormat("en-GB", {
+          timeZone: tz,
+          hour: "2-digit",
+          minute: "2-digit",
+          hourCycle: "h23"
+        }).formatToParts(value);
+        const hour = parts.find(function (p) {
+          return p.type === "hour";
+        });
+        const minute = parts.find(function (p) {
+          return p.type === "minute";
+        });
+        if (hour && minute) {
+          return fieldosPadClock_(Number(hour.value), Number(minute.value));
+        }
+      }
+    } catch (eIntl) {
+      /* fall through */
+    }
+    return fieldosPadClock_(value.getHours(), value.getMinutes());
+  }
+
+  // Sheets serial time fraction (portion of a day), e.g. 7/24.
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value >= 0 && value < 1) {
+      const totalMinutes = Math.round(value * 24 * 60) % (24 * 60);
+      return fieldosPadClock_(Math.floor(totalMinutes / 60), totalMinutes % 60);
+    }
+    return null;
+  }
+
+  const s = String(value).trim();
+  if (!s) return null;
+
+  // Already canonical or single-digit hour.
+  const hm = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(s);
+  if (hm) return fieldosPadClock_(Number(hm[1]), Number(hm[2]));
+
+  // Reject ambiguous free text early (before loose ISO / locale parsing).
+  if (
+    /^(morning|afternoon|evening|noon|midnight|all\s*day)$/i.test(s) ||
+    /^\d{1,2}\s*(am|pm)\b/i.test(s) ||
+    /\d\s*(am|pm)\s*to\s*/i.test(s) ||
+    /to\s*\d/i.test(s) ||
+    /ish/i.test(s) ||
+    /^\d{1,2}$/.test(s)
+  ) {
+    return null;
+  }
+
+  // ISO / RFC datetime (including Sheets JSON 1899-12-30T…Z).
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
+    // Excel/Sheets time serials often carry wall-clock HH:MM in the UTC field for 1899/1900.
+    // Prefer those digits over timezone shifting (07:00Z must stay 07:00, not 17:00 Sydney).
+    const epochWall = /^(1899|1900)-\d{2}-\d{2}T([01]\d|2[0-3]):([0-5]\d)/.exec(s);
+    if (epochWall && /Z$/i.test(s)) {
+      return fieldosPadClock_(Number(epochWall[2]), Number(epochWall[3]));
+    }
+    const parsed = new Date(s);
+    if (!isNaN(parsed.getTime())) {
+      try {
+        if (typeof Utilities !== "undefined" && Utilities.formatDate) {
+          const formatted = Utilities.formatDate(
+            parsed,
+            opts.timezone || fieldosSpreadsheetTimeZone_(),
+            "HH:mm"
+          );
+          if (/^([01]\d|2[0-3]):[0-5]\d$/.test(formatted)) return formatted;
+        }
+      } catch (e2) {
+        /* fall through */
+      }
+      // Node / browser: format in spreadsheet timezone without UTC shift.
+      const tz = opts.timezone || fieldosSpreadsheetTimeZone_();
+      try {
+        if (typeof Intl !== "undefined" && Intl.DateTimeFormat) {
+          const parts = new Intl.DateTimeFormat("en-GB", {
+            timeZone: tz,
+            hour: "2-digit",
+            minute: "2-digit",
+            hourCycle: "h23"
+          }).formatToParts(parsed);
+          const hour = parts.find(function (p) {
+            return p.type === "hour";
+          });
+          const minute = parts.find(function (p) {
+            return p.type === "minute";
+          });
+          if (hour && minute) {
+            return fieldosPadClock_(Number(hour.value), Number(minute.value));
+          }
+        }
+      } catch (e3) {
+        /* fall through */
+      }
+    }
+    return null;
+  }
+
+  // Locale Date#toString residue e.g. "Sat Dec 30 1899 07:00:00 GMT+1000 (...)".
+  const locale = /\b([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?\b/.exec(s);
+  if (locale && /(?:GMT|UTC|1899|1900|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(s)) {
+    return fieldosPadClock_(Number(locale[1]), Number(locale[2]));
+  }
+
+  return null;
+}
+
+/**
+ * Parse clock value into minutes from midnight. Normalises Sheets/Date/ISO first.
+ * Returns null if blank or invalid.
  */
 function fieldosParseTimeToMinutes_(value) {
   if (value == null || value === "") return null;
-  const s = String(value).trim();
-  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(s);
+  const normalised = fieldosNormaliseClockTime_(value);
+  if (!normalised) return null;
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(normalised);
   if (!m) return null;
   return Number(m[1]) * 60 + Number(m[2]);
+}
+
+/** True when a clock field has any non-empty raw value (including Date / fraction). */
+function fieldosClockTimePresent_(value) {
+  if (value == null || value === "") return false;
+  if (typeof value === "string" && value.trim() === "") return false;
+  return true;
 }
 
 /**
@@ -39,8 +233,14 @@ function fieldosComputeLabourEntry_(entry, options) {
   const maxShiftHours = opts.maxShiftHours != null ? Number(opts.maxShiftHours) : FIELDOS_MAX_SHIFT_HOURS_;
   const errors = [];
   const warnings = [];
-  const start = fieldosParseTimeToMinutes_(entry && entry.start_time);
-  const finish = fieldosParseTimeToMinutes_(entry && entry.finish_time);
+  const startNorm = fieldosClockTimePresent_(entry && entry.start_time)
+    ? fieldosNormaliseClockTime_(entry.start_time)
+    : null;
+  const finishNorm = fieldosClockTimePresent_(entry && entry.finish_time)
+    ? fieldosNormaliseClockTime_(entry.finish_time)
+    : null;
+  const start = startNorm ? fieldosParseTimeToMinutes_(startNorm) : null;
+  const finish = finishNorm ? fieldosParseTimeToMinutes_(finishNorm) : null;
   let breakMinutes = entry && entry.break_minutes != null && entry.break_minutes !== ""
     ? Number(entry.break_minutes)
     : 0;
@@ -59,14 +259,16 @@ function fieldosComputeLabourEntry_(entry, options) {
   if (breakMinutes < 0) errors.push("Break minutes cannot be negative.");
   if (travelMinutes < 0) errors.push("travel_minutes cannot be negative.");
 
-  const startRaw = String((entry && entry.start_time) || "").trim();
-  const finishRaw = String((entry && entry.finish_time) || "").trim();
   // Blank → required only. Non-empty invalid → format only. Never both for one field.
-  if (start == null) {
-    errors.push(startRaw === "" ? "Start time is required." : "Start time must use HH:MM.");
+  if (!fieldosClockTimePresent_(entry && entry.start_time)) {
+    errors.push("Start time is required.");
+  } else if (start == null) {
+    errors.push("Start time must use HH:MM.");
   }
-  if (finish == null) {
-    errors.push(finishRaw === "" ? "Finish time is required." : "Finish time must use HH:MM.");
+  if (!fieldosClockTimePresent_(entry && entry.finish_time)) {
+    errors.push("Finish time is required.");
+  } else if (finish == null) {
+    errors.push("Finish time must use HH:MM.");
   }
   if (start == null || finish == null) {
     return {
@@ -76,7 +278,9 @@ function fieldosComputeLabourEntry_(entry, options) {
       labour_hours: null,
       travel_hours: Math.round((travelMinutes / 60) * 100) / 100,
       errors: fieldosUniqueMessages_(errors),
-      warnings: warnings
+      warnings: warnings,
+      start_time: startNorm || "",
+      finish_time: finishNorm || ""
     };
   }
 
@@ -89,7 +293,9 @@ function fieldosComputeLabourEntry_(entry, options) {
       labour_hours: null,
       travel_hours: Math.round((travelMinutes / 60) * 100) / 100,
       errors: fieldosUniqueMessages_(errors),
-      warnings: fieldosUniqueMessages_(warnings)
+      warnings: fieldosUniqueMessages_(warnings),
+      start_time: startNorm,
+      finish_time: finishNorm
     };
   }
 
@@ -112,7 +318,9 @@ function fieldosComputeLabourEntry_(entry, options) {
     labour_hours: labourHours,
     travel_hours: travelHours,
     errors: fieldosUniqueMessages_(errors),
-    warnings: fieldosUniqueMessages_(warnings)
+    warnings: fieldosUniqueMessages_(warnings),
+    start_time: startNorm,
+    finish_time: finishNorm
   };
 }
 

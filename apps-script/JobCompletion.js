@@ -197,9 +197,29 @@ var FieldOSJobCompletion = {
   },
 
   _normaliseLabourRow: function (row, completionId, jobSheetId, now) {
-    const calc = fieldosComputeLabourEntry_(row);
+    const startCanonical = fieldosClockTimePresent_(row.start_time)
+      ? fieldosNormaliseClockTime_(row.start_time)
+      : "";
+    const finishCanonical = fieldosClockTimePresent_(row.finish_time)
+      ? fieldosNormaliseClockTime_(row.finish_time)
+      : "";
+    // Validate using canonical HH:MM when available; otherwise pass through raw
+    // non-blank values so format errors still surface (never String(Date)).
+    const calc = fieldosComputeLabourEntry_({
+      start_time: startCanonical
+        ? startCanonical
+        : fieldosClockTimePresent_(row.start_time)
+          ? "invalid"
+          : "",
+      finish_time: finishCanonical
+        ? finishCanonical
+        : fieldosClockTimePresent_(row.finish_time)
+          ? "invalid"
+          : "",
+      break_minutes: row.break_minutes,
+      travel_minutes: row.travel_minutes
+    });
     // Drafts may keep blank start/finish. Only block malformed/arithmetic errors here.
-    // Finalise gate still requires times via fieldosValidateCompletionForFinalise_.
     const blocking = (calc.errors || []).filter(function (e) {
       return !/Start time is required\.|Finish time is required\./.test(String(e));
     });
@@ -213,8 +233,8 @@ var FieldOSJobCompletion = {
       staff_id: String(row.staff_id || ""),
       staff_name: String(row.staff_name || ""),
       work_date: String(row.work_date || "").slice(0, 10),
-      start_time: String(row.start_time || ""),
-      finish_time: String(row.finish_time || ""),
+      start_time: startCanonical || "",
+      finish_time: finishCanonical || "",
       break_minutes: Number(row.break_minutes) || 0,
       labour_hours: calc.labour_hours == null ? "" : calc.labour_hours,
       travel_minutes: Number(row.travel_minutes) || 0,
@@ -230,7 +250,17 @@ var FieldOSJobCompletion = {
   },
 
   _normaliseMachineryRow: function (row, completionId, jobSheetId, now) {
-    const calc = fieldosComputeMachineryDurationHours_(row);
+    const startCanonical = fieldosClockTimePresent_(row.start_time)
+      ? fieldosNormaliseClockTime_(row.start_time) || ""
+      : "";
+    const finishCanonical = fieldosClockTimePresent_(row.finish_time)
+      ? fieldosNormaliseClockTime_(row.finish_time) || ""
+      : "";
+    const calc = fieldosComputeMachineryDurationHours_({
+      duration_hours: row.duration_hours,
+      start_time: startCanonical,
+      finish_time: finishCanonical
+    });
     if (!calc.ok) {
       throw new Error("Validation Error: " + calc.errors.join(" "));
     }
@@ -240,8 +270,8 @@ var FieldOSJobCompletion = {
       job_sheet_id: jobSheetId,
       equipment_name: String(row.equipment_name || ""),
       operator_staff_id: String(row.operator_staff_id || ""),
-      start_time: String(row.start_time || ""),
-      finish_time: String(row.finish_time || ""),
+      start_time: startCanonical,
+      finish_time: finishCanonical,
       duration_hours: calc.duration_hours == null ? "" : calc.duration_hours,
       billable: this._boolSheet(row.billable),
       confirmation_status: String(row.confirmation_status || FIELDOS_ROW_CONFIRMATION_.SUGGESTED),
@@ -279,6 +309,8 @@ var FieldOSJobCompletion = {
   },
 
   _toApiLabour: function (row) {
+    const start = fieldosNormaliseClockTime_(row.start_time) || "";
+    const finish = fieldosNormaliseClockTime_(row.finish_time) || "";
     return {
       labour_id: String(row.labour_id || ""),
       completion_id: String(row.completion_id || ""),
@@ -286,8 +318,8 @@ var FieldOSJobCompletion = {
       staff_id: String(row.staff_id || ""),
       staff_name: String(row.staff_name || ""),
       work_date: String(row.work_date || ""),
-      start_time: String(row.start_time || ""),
-      finish_time: String(row.finish_time || ""),
+      start_time: start,
+      finish_time: finish,
       break_minutes: Number(row.break_minutes) || 0,
       labour_hours:
         row.labour_hours === "" || row.labour_hours == null ? null : Number(row.labour_hours),
@@ -311,8 +343,8 @@ var FieldOSJobCompletion = {
       job_sheet_id: String(row.job_sheet_id || ""),
       equipment_name: String(row.equipment_name || ""),
       operator_staff_id: String(row.operator_staff_id || ""),
-      start_time: String(row.start_time || ""),
-      finish_time: String(row.finish_time || ""),
+      start_time: fieldosNormaliseClockTime_(row.start_time) || "",
+      finish_time: fieldosNormaliseClockTime_(row.finish_time) || "",
       duration_hours:
         row.duration_hours === "" || row.duration_hours == null
           ? null

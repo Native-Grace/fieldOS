@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 MAX_SHIFT_HOURS = 12
 ROW_SUGGESTED = "Suggested"
@@ -14,16 +16,107 @@ STATUS_READY = "Ready for Final Review"
 STATUS_FINALISED = "Finalised"
 STATUS_REOPENED = "Reopened"
 
+DEFAULT_TIMEZONE = "Australia/Sydney"
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+
+
+def _pad_clock(hours: int, minutes: int) -> str | None:
+    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+        return None
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def normalise_clock_time(value: Any, *, timezone_name: str = DEFAULT_TIMEZONE) -> str | None:
+    """Canonical HH:MM from HH:MM, H:MM, datetime, ISO, or Sheets fraction. Reject free text."""
+    if value is None or value == "":
+        return None
+
+    if isinstance(value, datetime):
+        try:
+            tz = ZoneInfo(timezone_name)
+        except Exception:
+            tz = ZoneInfo(DEFAULT_TIMEZONE)
+        local = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        local = local.astimezone(tz)
+        return _pad_clock(local.hour, local.minute)
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        if 0 <= number < 1:
+            total_minutes = int(round(number * 24 * 60)) % (24 * 60)
+            return _pad_clock(total_minutes // 60, total_minutes % 60)
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    match = _TIME_RE.match(text)
+    if match:
+        return _pad_clock(int(match.group(1)), int(match.group(2)))
+
+    if (
+        re.match(r"^(morning|afternoon|evening|noon|midnight|all\s*day)$", text, re.I)
+        or re.match(r"^\d{1,2}\s*(am|pm)\b", text, re.I)
+        or re.search(r"\d\s*(am|pm)\s*to\s*", text, re.I)
+        or re.search(r"to\s*\d", text, re.I)
+        or re.search(r"ish", text, re.I)
+        or re.match(r"^\d{1,2}$", text)
+    ):
+        return None
+
+    if _ISO_RE.match(text):
+        # Sheets time serials often place wall-clock HH:MM in the UTC field for 1899/1900.
+        epoch = re.match(r"^(1899|1900)-\d{2}-\d{2}T([01]\d|2[0-3]):([0-5]\d)", text)
+        if epoch and text.endswith("Z"):
+            return _pad_clock(int(epoch.group(2)), int(epoch.group(3)))
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return normalise_clock_time(parsed, timezone_name=timezone_name)
+
+    locale = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?\b", text)
+    if locale and re.search(
+        r"(?:GMT|UTC|1899|1900|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)", text, re.I
+    ):
+        return _pad_clock(int(locale.group(1)), int(locale.group(2)))
+
+    return None
+
+
+def describe_clock_time(value: Any, *, timezone_name: str = DEFAULT_TIMEZONE) -> dict[str, Any]:
+    if value is None:
+        type_name = "null"
+    elif value == "":
+        type_name = "empty_string"
+    elif isinstance(value, datetime):
+        type_name = "datetime"
+    else:
+        type_name = type(value).__name__
+    normalised = normalise_clock_time(value, timezone_name=timezone_name)
+    return {"type": type_name, "normalised": normalised, "ok": bool(normalised)}
 
 
 def parse_time_to_minutes(value: Any) -> int | None:
     if value is None or value == "":
         return None
-    match = _TIME_RE.match(str(value).strip())
+    normalised = normalise_clock_time(value)
+    if not normalised:
+        return None
+    match = re.match(r"^([01]\d|2[0-3]):([0-5]\d)$", normalised)
     if not match:
         return None
     return int(match.group(1)) * 60 + int(match.group(2))
+
+
+def clock_time_present(value: Any) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    return True
 
 
 def unique_messages(messages: list[str] | None) -> list[str]:
@@ -98,8 +191,14 @@ def is_break_warning_resolved(resolutions: list[dict[str, Any]] | None, warning_
 def compute_labour_entry(entry: dict[str, Any], *, max_shift_hours: float = MAX_SHIFT_HOURS) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
-    start = parse_time_to_minutes(entry.get("start_time"))
-    finish = parse_time_to_minutes(entry.get("finish_time"))
+    start_norm = (
+        normalise_clock_time(entry.get("start_time")) if clock_time_present(entry.get("start_time")) else None
+    )
+    finish_norm = (
+        normalise_clock_time(entry.get("finish_time")) if clock_time_present(entry.get("finish_time")) else None
+    )
+    start = parse_time_to_minutes(start_norm) if start_norm else None
+    finish = parse_time_to_minutes(finish_norm) if finish_norm else None
     try:
         break_minutes = float(entry.get("break_minutes") or 0)
     except (TypeError, ValueError):
@@ -116,13 +215,14 @@ def compute_labour_entry(entry: dict[str, Any], *, max_shift_hours: float = MAX_
     if travel_minutes < 0:
         errors.append("travel_minutes cannot be negative.")
 
-    start_raw = str(entry.get("start_time") or "").strip()
-    finish_raw = str(entry.get("finish_time") or "").strip()
-    # Blank → required only. Non-empty invalid → format only. Never both for one field.
-    if start is None:
-        errors.append("Start time is required." if start_raw == "" else "Start time must use HH:MM.")
-    if finish is None:
-        errors.append("Finish time is required." if finish_raw == "" else "Finish time must use HH:MM.")
+    if not clock_time_present(entry.get("start_time")):
+        errors.append("Start time is required.")
+    elif start is None:
+        errors.append("Start time must use HH:MM.")
+    if not clock_time_present(entry.get("finish_time")):
+        errors.append("Finish time is required.")
+    elif finish is None:
+        errors.append("Finish time must use HH:MM.")
 
     travel_hours = round(max(0.0, travel_minutes) / 60.0, 2)
     if start is None or finish is None:
@@ -134,6 +234,8 @@ def compute_labour_entry(entry: dict[str, Any], *, max_shift_hours: float = MAX_
             "travel_hours": travel_hours,
             "errors": unique_messages(errors),
             "warnings": unique_messages(warnings),
+            "start_time": start_norm or "",
+            "finish_time": finish_norm or "",
         }
 
     if finish <= start:
@@ -146,6 +248,8 @@ def compute_labour_entry(entry: dict[str, Any], *, max_shift_hours: float = MAX_
             "travel_hours": travel_hours,
             "errors": unique_messages(errors),
             "warnings": unique_messages(warnings),
+            "start_time": start_norm or "",
+            "finish_time": finish_norm or "",
         }
 
     gross = finish - start
@@ -163,6 +267,8 @@ def compute_labour_entry(entry: dict[str, Any], *, max_shift_hours: float = MAX_
         "travel_hours": travel_hours,
         "errors": unique_messages(errors),
         "warnings": unique_messages(warnings),
+        "start_time": start_norm or "",
+        "finish_time": finish_norm or "",
     }
 
 

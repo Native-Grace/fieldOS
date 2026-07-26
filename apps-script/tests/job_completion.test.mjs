@@ -31,7 +31,24 @@ function loadCompletion(harness) {
   const context = {
     console,
     Logger: { log() {} },
-    Utilities: { formatDate: () => "2026-07-01", getUuid: () => "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
+    Utilities: {
+      formatDate(date, _tz, pattern) {
+        if (pattern === "HH:mm" || pattern === "HH:MM") {
+          const d = date instanceof Date ? date : new Date(date);
+          const parts = new Intl.DateTimeFormat("en-GB", {
+            timeZone: "Australia/Sydney",
+            hour: "2-digit",
+            minute: "2-digit",
+            hourCycle: "h23",
+          }).formatToParts(d);
+          const hour = parts.find((p) => p.type === "hour")?.value ?? "00";
+          const minute = parts.find((p) => p.type === "minute")?.value ?? "00";
+          return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+        }
+        return "2026-07-01";
+      },
+      getUuid: () => "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    },
     JobSheetRepository: {
       findById(id) {
         return harness.jobs[id] || null;
@@ -477,4 +494,132 @@ test("finalisation blocked when suggested rows remain", () => {
       }),
     /Suggested|Validation Error/
   );
+});
+
+test("clock normaliser accepts HH:MM, H:MM, Date, ISO, fraction; rejects free text", () => {
+  const ctx = loadHelpers();
+  assert.equal(ctx.fieldosNormaliseClockTime_("07:00"), "07:00");
+  assert.equal(ctx.fieldosNormaliseClockTime_("7:00"), "07:00");
+  assert.equal(ctx.fieldosNormaliseClockTime_(7 / 24), "07:00");
+  assert.equal(ctx.fieldosNormaliseClockTime_("7"), null);
+  assert.equal(ctx.fieldosNormaliseClockTime_("morning"), null);
+  assert.equal(ctx.fieldosNormaliseClockTime_("7ish"), null);
+  assert.equal(ctx.fieldosNormaliseClockTime_("7am to 5pm"), null);
+  assert.equal(ctx.fieldosNormaliseClockTime_("7am"), null);
+
+  // Sheets-like Date: wall-clock 07:00 in Australia/Sydney.
+  const sheetDate = new Date("1899-12-30T07:00:00+10:00");
+  assert.equal(ctx.fieldosNormaliseClockTime_(sheetDate), "07:00");
+
+  // ISO that is 07:00 Sydney (AEST, July) — must not become 21:00 via UTC.
+  const isoSydneySeven = "2026-07-25T21:00:00.000Z";
+  assert.equal(ctx.fieldosNormaliseClockTime_(isoSydneySeven), "07:00");
+  assert.equal(ctx.fieldosNormaliseClockTime_("1899-12-30T07:00:00.000Z"), "07:00");
+  assert.equal(ctx.fieldosNormaliseClockTime_("1899-12-30T07:00:00.000+10:00"), "07:00");
+
+  const diag = ctx.fieldosDescribeClockTime_(sheetDate);
+  assert.equal(diag.type, "Date");
+  assert.equal(diag.normalised, "07:00");
+  assert.equal(diag.ok, true);
+});
+
+test("spreadsheet timezone stability: local 07:00 does not shift to UTC hour", () => {
+  const ctx = loadHelpers();
+  // Instant corresponding to 07:00 Australia/Sydney in winter (AEST = UTC+10).
+  const instant = new Date("2026-07-26T07:00:00+10:00");
+  assert.equal(ctx.fieldosNormaliseClockTime_(instant), "07:00");
+  assert.equal(ctx.fieldosNormaliseClockTime_(instant.toISOString()), "07:00");
+  // UTC formatting of the same instant is 21:00 previous day — prove we did not use that.
+  assert.notEqual(instant.toISOString().slice(11, 16), "07:00");
+});
+
+test("read -> api -> save -> read round trip keeps canonical HH:MM", () => {
+  const h = harness();
+  const ctx = loadCompletion(h);
+  let data = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  }).data;
+
+  // Simulate Sheets returning Date objects for time cells on read.
+  const sheetStart = new Date("1899-12-30T07:00:00+10:00");
+  const sheetFinish = new Date("1899-12-30T15:00:00+10:00");
+  h.tables.tbl_job_labour[0].start_time = sheetStart;
+  h.tables.tbl_job_labour[0].finish_time = sheetFinish;
+
+  data = ctx.FieldOSJobCompletion.getJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  }).data;
+  assert.equal(data.labour_entries[0].start_time, "07:00");
+  assert.equal(data.labour_entries[0].finish_time, "15:00");
+
+  data = ctx.FieldOSJobCompletion.updateJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+    expected_version: data.completion.version,
+    work_summary: data.completion.work_summary,
+    invoice_description: data.completion.invoice_description,
+    labour_entries: data.labour_entries.map((row) => ({
+      ...row,
+      confirmation_status: "Confirmed",
+      break_minutes: 30,
+    })),
+    machinery_entries: (data.machinery_entries || []).map((row) => ({
+      ...row,
+      duration_hours: 1,
+      confirmation_status: "Confirmed",
+    })),
+    material_entries: (data.material_entries || []).map((row) => ({
+      ...row,
+      confirmation_status: "Confirmed",
+    })),
+    warnings: [],
+    warning_resolutions: [],
+  }).data;
+
+  assert.equal(data.labour_entries[0].start_time, "07:00");
+  assert.equal(data.labour_entries[0].finish_time, "15:00");
+  assert.equal(typeof h.tables.tbl_job_labour[0].start_time, "string");
+  assert.equal(h.tables.tbl_job_labour[0].start_time, "07:00");
+});
+
+test("finalisation succeeds with canonical times after Sheets Date coercion", () => {
+  const h = harness();
+  const ctx = loadCompletion(h);
+  let data = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  }).data;
+
+  h.tables.tbl_job_labour[0].start_time = new Date("1899-12-30T07:00:00+10:00");
+  h.tables.tbl_job_labour[0].finish_time = new Date("1899-12-30T15:00:00+10:00");
+  h.tables.tbl_job_labour[0].break_minutes = 30;
+  h.tables.tbl_job_labour[0].confirmation_status = "Confirmed";
+  (h.tables.tbl_job_machinery || []).forEach((row) => {
+    row.duration_hours = 1;
+    row.confirmation_status = "Confirmed";
+  });
+  (h.tables.tbl_job_materials || []).forEach((row) => {
+    row.confirmation_status = "Confirmed";
+  });
+  h.tables.tbl_job_completions[0].warnings = "[]";
+  h.tables.tbl_job_completions[0].warning_resolutions = "[]";
+  h.tables.tbl_job_completions[0].work_summary = "Planted trees";
+  h.tables.tbl_job_completions[0].invoice_description = "Seven trees";
+
+  data = ctx.FieldOSJobCompletion.finaliseJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+    actor_identity: "mgr",
+    expected_version: data.completion.version,
+  }).data;
+  assert.equal(data.completion.completion_status, "Finalised");
+  assert.equal(data.labour_entries[0].start_time, "07:00");
+  assert.equal(data.completion.total_labour_hours, 7.5);
 });

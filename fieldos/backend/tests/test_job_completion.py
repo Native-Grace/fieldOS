@@ -392,3 +392,56 @@ def test_invalid_arithmetic_cannot_be_overridden() -> None:
     )
     assert gate["ok"] is False
     assert any("Break minutes cannot exceed" in e for e in gate["critical_errors"])
+
+
+def test_clock_normaliser_formats_and_rejects_free_text() -> None:
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from app.services.completion_math import describe_clock_time, normalise_clock_time
+
+    assert normalise_clock_time("07:00") == "07:00"
+    assert normalise_clock_time("7:00") == "07:00"
+    assert normalise_clock_time(7 / 24) == "07:00"
+    assert normalise_clock_time("7") is None
+    assert normalise_clock_time("morning") is None
+    assert normalise_clock_time("7ish") is None
+    assert normalise_clock_time("7am to 5pm") is None
+
+    sydney = ZoneInfo("Australia/Sydney")
+    local_seven = datetime(2026, 7, 26, 7, 0, tzinfo=sydney)
+    assert normalise_clock_time(local_seven) == "07:00"
+    assert normalise_clock_time(local_seven.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")) == "07:00"
+    assert normalise_clock_time("1899-12-30T07:00:00+10:00") == "07:00"
+
+    diag = describe_clock_time(local_seven)
+    assert diag["type"] == "datetime"
+    assert diag["normalised"] == "07:00"
+    assert diag["ok"] is True
+
+
+def test_finalise_accepts_iso_times_from_sheets_coercion() -> None:
+    from app.services.completion_math import validate_for_finalise
+
+    gate = validate_for_finalise(
+        {
+            "completion_status": "Draft",
+            "work_summary": "Planted trees",
+            "invoice_description": "Seven trees",
+            "warnings": [],
+            "warning_resolutions": [],
+            "labour_entries": [
+                {
+                    "start_time": "1899-12-30T07:00:00+10:00",
+                    "finish_time": "1899-12-30T15:00:00+10:00",
+                    "break_minutes": 30,
+                    "confirmation_status": "Confirmed",
+                }
+            ],
+            "machinery_entries": [],
+            "material_entries": [],
+        },
+        {"approval_status": "Approved", "processing_status": "Completed"},
+    )
+    assert gate["ok"] is True, gate["critical_errors"]
+    assert gate["totals"]["total_labour_hours"] == 7.5

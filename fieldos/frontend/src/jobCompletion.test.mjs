@@ -9,12 +9,14 @@ import {
   canFinaliseClient,
   collectLabourValidationMessages,
   completionHasUnsavedChanges,
+  describeClockTime,
   displayLabourHours,
   emptyLabourRow,
   isBreakWarningResolved,
   isMobileFriendlyTableLayout,
   labourFieldErrors,
   needsOverrideReason,
+  normaliseClockTime,
   ROW_CONFIRMATION,
   upsertBreakWarningResolution,
 } from "./jobCompletionHelpers.mjs";
@@ -159,4 +161,33 @@ test("completion form builds safely from null/failed payload (panel stays resili
   assert.deepEqual(empty.warning_resolutions, []);
   const partial = buildCompletionForm({ completion: null });
   assert.equal(partial.invoice_description, "");
+});
+
+test("clock normaliser and form coerce ISO/Date/fraction to HH:MM for time inputs", () => {
+  assert.equal(normaliseClockTime("07:00"), "07:00");
+  assert.equal(normaliseClockTime("7:00"), "07:00");
+  assert.equal(normaliseClockTime(7 / 24), "07:00");
+  assert.equal(normaliseClockTime("7"), null);
+  assert.equal(normaliseClockTime("morning"), null);
+  assert.equal(normaliseClockTime("7ish"), null);
+  assert.equal(normaliseClockTime("7am to 5pm"), null);
+
+  const iso = "2026-07-25T21:00:00.000Z"; // 07:00 Australia/Sydney AEST
+  assert.equal(normaliseClockTime(iso), "07:00");
+  assert.equal(describeClockTime(iso).type, "string");
+  assert.equal(describeClockTime(iso).normalised, "07:00");
+
+  const form = buildCompletionForm({
+    completion: { work_summary: "x", invoice_description: "y" },
+    labour_entries: [
+      {
+        start_time: "1899-12-30T07:00:00+10:00",
+        finish_time: 15 / 24,
+        break_minutes: 0,
+        confirmation_status: ROW_CONFIRMATION.CONFIRMED,
+      },
+    ],
+  });
+  assert.equal(form.labour_entries[0].start_time, "07:00");
+  assert.equal(form.labour_entries[0].finish_time, "15:00");
 });

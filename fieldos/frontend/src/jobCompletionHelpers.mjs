@@ -13,6 +13,104 @@ export const ROW_CONFIRMATION = {
   EXCLUDED: "Excluded",
 };
 
+export const DEFAULT_TIMEZONE = "Australia/Sydney";
+
+function padClock(hours, minutes) {
+  const h = Number(hours);
+  const m = Number(minutes);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * Canonical HH:MM for <input type="time"> and validation.
+ * Accepts HH:MM, H:MM, Date, ISO datetime, Sheets fraction.
+ * Rejects ambiguous free text.
+ */
+export function normaliseClockTime(value, timezoneName = DEFAULT_TIMEZONE) {
+  if (value == null || value === "") return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: timezoneName,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(value);
+      const hour = parts.find((p) => p.type === "hour");
+      const minute = parts.find((p) => p.type === "minute");
+      if (hour && minute) return padClock(Number(hour.value), Number(minute.value));
+    } catch {
+      return padClock(value.getHours(), value.getMinutes());
+    }
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value >= 0 && value < 1) {
+      const totalMinutes = Math.round(value * 24 * 60) % (24 * 60);
+      return padClock(Math.floor(totalMinutes / 60), totalMinutes % 60);
+    }
+    return null;
+  }
+
+  const s = String(value).trim();
+  if (!s) return null;
+
+  const hm = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(s);
+  if (hm) return padClock(Number(hm[1]), Number(hm[2]));
+
+  if (
+    /^(morning|afternoon|evening|noon|midnight|all\s*day)$/i.test(s) ||
+    /^\d{1,2}\s*(am|pm)\b/i.test(s) ||
+    /\d\s*(am|pm)\s*to\s*/i.test(s) ||
+    /to\s*\d/i.test(s) ||
+    /ish/i.test(s) ||
+    /^\d{1,2}$/.test(s)
+  ) {
+    return null;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
+    const epoch = /^(1899|1900)-\d{2}-\d{2}T([01]\d|2[0-3]):([0-5]\d)/.exec(s);
+    if (epoch && /Z$/i.test(s)) {
+      return padClock(Number(epoch[2]), Number(epoch[3]));
+    }
+    const parsed = new Date(s);
+    if (!Number.isNaN(parsed.getTime())) {
+      return normaliseClockTime(parsed, timezoneName);
+    }
+    return null;
+  }
+
+  const locale = /\b([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?\b/.exec(s);
+  if (
+    locale &&
+    /(?:GMT|UTC|1899|1900|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(s)
+  ) {
+    return padClock(Number(locale[1]), Number(locale[2]));
+  }
+
+  return null;
+}
+
+export function describeClockTime(value, timezoneName = DEFAULT_TIMEZONE) {
+  let type = "null";
+  if (value === undefined) type = "undefined";
+  else if (value === null) type = "null";
+  else if (value === "") type = "empty_string";
+  else if (value instanceof Date) type = "Date";
+  else type = typeof value;
+  const normalised = normaliseClockTime(value, timezoneName);
+  return { type, normalised, ok: Boolean(normalised) };
+}
+
+function canonicalClockOrEmpty(value) {
+  if (value == null || value === "") return "";
+  return normaliseClockTime(value) || "";
+}
+
 export function emptyLabourRow() {
   return {
     staff_id: "",
@@ -69,8 +167,16 @@ export function buildCompletionForm(data) {
     warning_resolutions: Array.isArray(c.warning_resolutions)
       ? c.warning_resolutions.map((row) => ({ ...row }))
       : [],
-    labour_entries: (data?.labour_entries || []).map((row) => ({ ...row })),
-    machinery_entries: (data?.machinery_entries || []).map((row) => ({ ...row })),
+    labour_entries: (data?.labour_entries || []).map((row) => ({
+      ...row,
+      start_time: canonicalClockOrEmpty(row.start_time),
+      finish_time: canonicalClockOrEmpty(row.finish_time),
+    })),
+    machinery_entries: (data?.machinery_entries || []).map((row) => ({
+      ...row,
+      start_time: canonicalClockOrEmpty(row.start_time),
+      finish_time: canonicalClockOrEmpty(row.finish_time),
+    })),
     material_entries: (data?.material_entries || []).map((row) => ({ ...row })),
   };
 }
@@ -83,8 +189,8 @@ export function completionHasUnsavedChanges(form, baseline) {
 
 /** Display hours from start/finish/break without trusting stored labour_hours. */
 export function displayLabourHours(row) {
-  const start = parseTime(row?.start_time);
-  const finish = parseTime(row?.finish_time);
+  const start = parseTime(normaliseClockTime(row?.start_time) || row?.start_time);
+  const finish = parseTime(normaliseClockTime(row?.finish_time) || row?.finish_time);
   if (start == null || finish == null || finish <= start) return null;
   const breakMinutes = Number(row?.break_minutes) || 0;
   if (breakMinutes < 0 || breakMinutes > finish - start) return null;
@@ -92,8 +198,9 @@ export function displayLabourHours(row) {
 }
 
 function parseTime(value) {
-  if (value == null || value === "") return null;
-  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(value).trim());
+  const normalised = normaliseClockTime(value);
+  if (!normalised) return null;
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(normalised);
   if (!m) return null;
   return Number(m[1]) * 60 + Number(m[2]);
 }
@@ -143,16 +250,24 @@ export function labourFieldErrors(row) {
   const errors = {};
   if (!row || row.confirmation_status === ROW_CONFIRMATION.EXCLUDED) return errors;
 
-  const startRaw = String(row.start_time || "").trim();
-  const finishRaw = String(row.finish_time || "").trim();
-  const start = parseTime(row.start_time);
-  const finish = parseTime(row.finish_time);
+  const startRaw = row.start_time;
+  const finishRaw = row.finish_time;
+  const startNorm = startRaw == null || startRaw === "" ? null : normaliseClockTime(startRaw);
+  const finishNorm = finishRaw == null || finishRaw === "" ? null : normaliseClockTime(finishRaw);
+  const start = startNorm ? parseTime(startNorm) : null;
+  const finish = finishNorm ? parseTime(finishNorm) : null;
 
-  if (!startRaw) errors.start_time = "Start time is required.";
-  else if (start == null) errors.start_time = "Use HH:MM.";
+  if (startRaw == null || String(startRaw).trim() === "") {
+    errors.start_time = "Start time is required.";
+  } else if (start == null) {
+    errors.start_time = "Use HH:MM.";
+  }
 
-  if (!finishRaw) errors.finish_time = "Finish time is required.";
-  else if (finish == null) errors.finish_time = "Use HH:MM.";
+  if (finishRaw == null || String(finishRaw).trim() === "") {
+    errors.finish_time = "Finish time is required.";
+  } else if (finish == null) {
+    errors.finish_time = "Use HH:MM.";
+  }
 
   const breakRaw = row.break_minutes;
   let breakMinutes = 0;
