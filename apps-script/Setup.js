@@ -182,6 +182,11 @@ function migrateSchemaForCompletionExports() {
  * Phase 3E: ensure rates / financial mapping / pricing snapshot sheets exist.
  * Non-destructive — creates missing tabs and appends missing columns only.
  * Does not write rate values; pricing data is entered by managers.
+ *
+ * Header arrays are defined inline so this migration works even when
+ * RatesFinancial.js has not yet been pushed into the Apps Script project.
+ * Keep these lists in sync with FIELDOS_*_HEADERS_ in RatesFinancial.js
+ * (and the material catalog link columns in JobCompletion.js).
  */
 function migrateSchemaForRatesFinancial() {
   const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
@@ -189,6 +194,216 @@ function migrateSchemaForRatesFinancial() {
     throw new Error("Migration Error: 'SPREADSHEET_ID' script property is missing or blank in Project Settings.");
   }
   const ss = SpreadsheetApp.openById(spreadsheetId);
+
+  const rateCardHeaders = [
+    "rate_card_id",
+    "card_name",
+    "description",
+    "currency",
+    "status",
+    "effective_from",
+    "effective_to",
+    "notes",
+    "created_by",
+    "created_at",
+    "updated_by",
+    "updated_at",
+    "version"
+  ];
+  const labourRateHeaders = [
+    "labour_rate_id",
+    "rate_card_id",
+    "staff_id",
+    "customer_id",
+    "project_id",
+    "role_code",
+    "activity_code",
+    "unit",
+    "sell_rate",
+    "cost_rate",
+    "travel_rate",
+    "overtime_rate",
+    "status",
+    "effective_from",
+    "effective_to",
+    "notes",
+    "created_by",
+    "created_at",
+    "updated_by",
+    "updated_at",
+    "version"
+  ];
+  const machineryRateHeaders = [
+    "machinery_rate_id",
+    "rate_card_id",
+    "equipment_id",
+    "equipment_name",
+    "charge_code",
+    "unit",
+    "sell_rate",
+    "cost_rate",
+    "minimum_charge",
+    "status",
+    "effective_from",
+    "effective_to",
+    "notes",
+    "created_by",
+    "created_at",
+    "updated_by",
+    "updated_at",
+    "version"
+  ];
+  const materialCatalogHeaders = [
+    "material_id",
+    "item_code",
+    "item_name",
+    "description",
+    "unit",
+    "cost_price",
+    "sell_price",
+    "tax_code",
+    "account_code",
+    "supplier",
+    "active",
+    "notes",
+    "created_by",
+    "created_at",
+    "updated_by",
+    "updated_at",
+    "version"
+  ];
+  const customerPricingHeaders = [
+    "customer_pricing_id",
+    "customer_id",
+    "project_id",
+    "rate_card_id",
+    "price_notes",
+    "status",
+    "effective_from",
+    "effective_to",
+    "notes",
+    "created_by",
+    "created_at",
+    "updated_by",
+    "updated_at",
+    "version"
+  ];
+  const payrollMappingHeaders = [
+    "payroll_mapping_id",
+    "staff_id",
+    "employee_reference",
+    "ordinary_hours_code",
+    "overtime_hours_code",
+    "travel_hours_code",
+    "allowance_code",
+    "cost_centre",
+    "pay_calendar",
+    "employment_classification",
+    "award_reference",
+    "status",
+    "effective_from",
+    "effective_to",
+    "notes",
+    "created_by",
+    "created_at",
+    "updated_by",
+    "updated_at",
+    "version"
+  ];
+  const xeroMappingHeaders = [
+    "xero_mapping_id",
+    "entity_type",
+    "local_reference",
+    "xero_reference",
+    "account_code",
+    "tax_type",
+    "tax_rate_percent",
+    "tracking_category",
+    "tracking_option",
+    "status",
+    "notes",
+    "created_by",
+    "created_at",
+    "updated_by",
+    "updated_at",
+    "version"
+  ];
+  const completionFinancialHeaders = [
+    "financial_snapshot_id",
+    "completion_id",
+    "job_sheet_id",
+    "customer_id",
+    "project_id",
+    "job_date",
+    "currency",
+    "snapshot_status",
+    "pricing_status",
+    "rate_card_id",
+    "line_count",
+    "subtotal_ex_tax",
+    "tax_amount",
+    "total_inc_tax",
+    "tax_type",
+    "tax_rate_percent",
+    "account_code",
+    "draft_reference",
+    "xero_reference",
+    "blockers",
+    "notes",
+    "created_by",
+    "created_at",
+    "validated_by",
+    "validated_at",
+    "approved_by",
+    "approved_at",
+    "superseded_by",
+    "superseded_at",
+    "version"
+  ];
+  const completionFinancialLineHeaders = [
+    "financial_line_id",
+    "financial_snapshot_id",
+    "completion_id",
+    "line_number",
+    "line_type",
+    "source_row_id",
+    "description",
+    "staff_id",
+    "equipment_id",
+    "material_id",
+    "quantity",
+    "unit",
+    "unit_sell",
+    "line_amount_ex_tax",
+    "tax_type",
+    "tax_rate_percent",
+    "tax_amount",
+    "line_total_inc_tax",
+    "account_code",
+    "rate_source_type",
+    "rate_source_id",
+    "billable",
+    "non_billable_reason",
+    "blockers",
+    "created_at"
+  ];
+  // Additive columns only — full Phase 3C material header set lives in JobCompletion.js.
+  const jobMaterialLinkHeaders = [
+    "material_entry_id",
+    "completion_id",
+    "job_sheet_id",
+    "item_name",
+    "catalog_material_id",
+    "item_code",
+    "quantity",
+    "unit",
+    "billable",
+    "confirmation_status",
+    "notes",
+    "source",
+    "created_at",
+    "updated_at"
+  ];
 
   function ensureTable(sheetName, columns) {
     let sheet = ss.getSheetByName(sheetName);
@@ -221,14 +436,15 @@ function migrateSchemaForRatesFinancial() {
     });
   }
 
-  ensureTable("tbl_rate_cards", FIELDOS_RATE_CARD_HEADERS_);
-  ensureTable("tbl_labour_rates", FIELDOS_LABOUR_RATE_HEADERS_);
-  ensureTable("tbl_machinery_rates", FIELDOS_MACHINERY_RATE_HEADERS_);
-  ensureTable("tbl_material_catalog", FIELDOS_MATERIAL_CATALOG_HEADERS_);
-  ensureTable("tbl_customer_pricing", FIELDOS_CUSTOMER_PRICING_HEADERS_);
-  ensureTable("tbl_payroll_mappings", FIELDOS_PAYROLL_MAPPING_HEADERS_);
-  ensureTable("tbl_xero_mappings", FIELDOS_XERO_MAPPING_HEADERS_);
-  ensureTable("tbl_completion_financials", FIELDOS_COMPLETION_FINANCIAL_HEADERS_);
-  ensureTable("tbl_completion_financial_lines", FIELDOS_COMPLETION_FINANCIAL_LINE_HEADERS_);
+  ensureTable("tbl_rate_cards", rateCardHeaders);
+  ensureTable("tbl_labour_rates", labourRateHeaders);
+  ensureTable("tbl_machinery_rates", machineryRateHeaders);
+  ensureTable("tbl_material_catalog", materialCatalogHeaders);
+  ensureTable("tbl_customer_pricing", customerPricingHeaders);
+  ensureTable("tbl_payroll_mappings", payrollMappingHeaders);
+  ensureTable("tbl_xero_mappings", xeroMappingHeaders);
+  ensureTable("tbl_completion_financials", completionFinancialHeaders);
+  ensureTable("tbl_completion_financial_lines", completionFinancialLineHeaders);
+  ensureTable("tbl_job_materials", jobMaterialLinkHeaders);
   Logger.log("Phase 3E rates and financial migration completed.");
 }
