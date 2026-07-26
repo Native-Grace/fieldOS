@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError, getStaff } from "../api";
 import { isManagerRole } from "../managerReviewHelpers.mjs";
 import {
@@ -21,6 +22,10 @@ import {
   upsertBreakWarningResolution,
   warningKey,
 } from "../jobCompletionHelpers.mjs";
+import {
+  isPricingReadinessEligible,
+  ratesPricingPath,
+} from "../ratesFinancialHelpers.mjs";
 
 export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
   const staff = getStaff();
@@ -377,6 +382,17 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
 
       {completion ? (
         <>
+          {manager && isPricingReadinessEligible(completion) ? (
+            <div className="panel-actions" style={{ marginBottom: "0.75rem" }}>
+              <Link
+                className="btn btn-ghost"
+                style={{ width: "auto", textDecoration: "none" }}
+                to={ratesPricingPath(completion.completion_id)}
+              >
+                Pricing Readiness
+              </Link>
+            </div>
+          ) : null}
           <div className="field">
             <label htmlFor="work-summary">Work summary</label>
             <textarea

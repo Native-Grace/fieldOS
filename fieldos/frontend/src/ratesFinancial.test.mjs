@@ -12,6 +12,7 @@ import {
   RATE_STATUSES,
   RATE_TABS,
   SNAPSHOT_STATUSES,
+  backToJobPath,
   buildRatesQuery,
   canApproveSnapshot,
   canSupersedeSnapshot,
@@ -20,11 +21,14 @@ import {
   emptyRowsMessage,
   formatMoneyDisplay,
   isManagerRole,
+  isPricingReadinessEligible,
   isWideLayout,
   overlapWarningText,
+  parseRatesCompletionId,
   precedenceRank,
   pruneBlanks,
   rateSourceLabel,
+  ratesPricingPath,
   readinessCards,
   readinessTone,
   snapshotStatusTone,
@@ -236,8 +240,74 @@ test("routes and manager navigation are wired", () => {
   assert.match(app, /path="\/rates"/);
   assert.match(app, /RatesFinancialPage/);
   assert.match(jobs, /to="\/rates"/);
+  assert.match(jobs, /Rates &amp; Financial/);
   assert.match(jobs, /manager &&/);
   assert.match(completions, /to="\/rates"/);
+  assert.match(completions, /Rates &amp; Financial/);
+  assert.match(completions, /Pricing Readiness/);
+  assert.match(completions, /ratesPricingPath/);
+  assert.ok(!jobs.includes('to="/rates"') || jobs.includes("manager &&"));
+});
+
+test("deep-link helpers parse completion_id and build paths", () => {
+  assert.equal(parseRatesCompletionId("?completion_id=CMP-288481F1"), "CMP-288481F1");
+  assert.equal(parseRatesCompletionId("completion_id=CMP-288481F1&tab=x"), "CMP-288481F1");
+  assert.equal(parseRatesCompletionId(""), "");
+  assert.equal(parseRatesCompletionId({ get: () => "  CMP-1  " }), "CMP-1");
+  assert.equal(parseRatesCompletionId({ completion_id: " CMP-2 " }), "CMP-2");
+  assert.equal(ratesPricingPath("CMP-288481F1"), "/rates?completion_id=CMP-288481F1");
+  assert.equal(ratesPricingPath(""), "/rates");
+  assert.equal(ratesPricingPath("CMP/weird"), "/rates?completion_id=CMP%2Fweird");
+  assert.equal(backToJobPath("21759f5d"), "/jobs/21759f5d");
+  assert.equal(backToJobPath(""), "");
+  assert.equal(isPricingReadinessEligible({ completion_id: "CMP-1" }), true);
+  assert.equal(isPricingReadinessEligible({}), false);
+});
+
+test("rates page deep-links completion_id, auto-loads readiness, never auto-creates snapshot", () => {
+  const page = fs.readFileSync(path.join(__dirname, "pages", "RatesFinancialPage.jsx"), "utf8");
+  assert.match(page, /useSearchParams/);
+  assert.match(page, /parseRatesCompletionId/);
+  assert.match(page, /queryCompletionId/);
+  assert.match(page, /setCompletionId\(queryCompletionId\)/);
+  assert.match(page, /setActiveTab\("financial_snapshots"\)/);
+  assert.match(page, /loadReadinessForId\(queryCompletionId\)/);
+  assert.match(page, /autoLoadedRef/);
+  assert.match(page, /Never creates a snapshot automatically|never created until you click Create draft snapshot/i);
+  assert.match(page, /status === 404/);
+  assert.match(page, /Completion not found/);
+  assert.match(page, /backToJobPath/);
+  assert.match(page, /Back to completion/);
+  // Auto path must not POST a new snapshot.
+  const autoEffect = page.slice(
+    page.indexOf("Deep-link: preload"),
+    page.indexOf("Deep-link: preload") + 600
+  );
+  assert.ok(!autoEffect.includes('method: "POST"'));
+  assert.ok(!autoEffect.includes("createSnapshot"));
+  assert.match(page, /createSnapshot/);
+  assert.match(page, /Create draft snapshot/);
+});
+
+test("staff cannot see rates navigation or pricing readiness actions", () => {
+  const jobs = fs.readFileSync(path.join(__dirname, "pages", "JobsPage.jsx"), "utf8");
+  const completions = fs.readFileSync(
+    path.join(__dirname, "pages", "CompletionsDashboardPage.jsx"),
+    "utf8"
+  );
+  const panel = fs.readFileSync(
+    path.join(__dirname, "components", "JobCompletionPanel.jsx"),
+    "utf8"
+  );
+  const page = fs.readFileSync(path.join(__dirname, "pages", "RatesFinancialPage.jsx"), "utf8");
+  assert.match(jobs, /manager &&[\s\S]*Rates &amp; Financial/);
+  assert.match(completions, /Navigate to="\/"/);
+  assert.match(completions, /isManagerRole/);
+  assert.match(panel, /manager && isPricingReadinessEligible/);
+  assert.match(panel, /ratesPricingPath\(completion\.completion_id\)/);
+  assert.match(panel, /Pricing Readiness/);
+  assert.match(page, /Navigate to="\/"/);
+  assert.match(page, /isManagerRole/);
 });
 
 test("page reuses the shared authenticated api client", () => {

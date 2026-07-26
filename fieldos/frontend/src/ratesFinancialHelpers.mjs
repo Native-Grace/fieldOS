@@ -184,3 +184,38 @@ export function readinessCards(readiness = {}) {
 export function isWideLayout(viewportWidth) {
   return Number(viewportWidth) >= 720;
 }
+
+/** Normalise a completion_id from a URL query value. */
+export function parseRatesCompletionId(searchOrParams) {
+  let raw = "";
+  if (typeof searchOrParams === "string") {
+    const qs = searchOrParams.startsWith("?") ? searchOrParams.slice(1) : searchOrParams;
+    raw = new URLSearchParams(qs).get("completion_id") || "";
+  } else if (searchOrParams && typeof searchOrParams.get === "function") {
+    raw = searchOrParams.get("completion_id") || "";
+  } else if (searchOrParams && typeof searchOrParams === "object") {
+    raw = searchOrParams.completion_id || "";
+  }
+  return String(raw).trim();
+}
+
+/** Deep-link into Rates & Financial with an optional completion preload. */
+export function ratesPricingPath(completionId) {
+  const id = String(completionId || "").trim();
+  if (!id) return "/rates";
+  return `/rates?completion_id=${encodeURIComponent(id)}`;
+}
+
+export function backToJobPath(jobSheetId) {
+  const id = String(jobSheetId || "").trim();
+  if (!id) return "";
+  return `/jobs/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Dashboard / completion panels may offer Pricing Readiness when a completion
+ * exists. Managers only — callers must also gate on role.
+ */
+export function isPricingReadinessEligible(row = {}) {
+  return Boolean(String(row?.completion_id || "").trim());
+}

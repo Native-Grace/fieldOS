@@ -86,7 +86,7 @@ export default function JobsPage() {
           )}
           {manager && (
             <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/rates">
-              Rates
+              Rates &amp; Financial
             </Link>
           )}
           <label className="range-select">

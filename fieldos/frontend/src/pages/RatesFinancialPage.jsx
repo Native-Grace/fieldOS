@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, Navigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { ApiError, api, clearSession, getStaff } from "../api";
 import {
   RATE_SOURCE_PRECEDENCE,
   RATE_STATUSES,
   RATE_TABS,
   SNAPSHOT_STATUSES,
+  backToJobPath,
   buildRatesQuery,
   canApproveSnapshot,
   canSupersedeSnapshot,
@@ -15,6 +16,7 @@ import {
   formatMoneyDisplay,
   isManagerRole,
   overlapWarningText,
+  parseRatesCompletionId,
   precedenceRank,
   pruneBlanks,
   rateSourceLabel,
@@ -293,7 +295,13 @@ function todayIso() {
 export default function RatesFinancialPage() {
   const staff = getStaff();
   const manager = isManagerRole(staff?.role);
-  const [activeTab, setActiveTab] = useState(RATE_TABS[0].key);
+  const [searchParams] = useSearchParams();
+  const queryCompletionId = parseRatesCompletionId(searchParams);
+  const autoLoadedRef = useRef("");
+
+  const [activeTab, setActiveTab] = useState(
+    queryCompletionId ? "financial_snapshots" : RATE_TABS[0].key
+  );
   const [filters, setFilters] = useState({ on_date: todayIso(), include_inactive: false });
   const [rows, setRows] = useState([]);
   const [overlaps, setOverlaps] = useState([]);
@@ -303,7 +311,7 @@ export default function RatesFinancialPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
-  const [completionId, setCompletionId] = useState("");
+  const [completionId, setCompletionId] = useState(queryCompletionId);
   const [readiness, setReadiness] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [snapshotFilter, setSnapshotFilter] = useState("");
@@ -313,13 +321,28 @@ export default function RatesFinancialPage() {
 
   const config = TABS[activeTab];
   const isSnapshotTab = activeTab === "financial_snapshots";
+  const backJobPath = backToJobPath(readiness?.job_sheet_id);
 
   useEffect(() => {
     if (!manager || !config) return;
+    if (isSnapshotTab) return;
     setForm(emptyForm(config));
     loadRows(activeTab, filters);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manager, activeTab]);
+
+  // Deep-link: preload completion_id from ?completion_id= and load readiness once.
+  // Never creates a snapshot automatically. Refresh keeps the query string via the router.
+  useEffect(() => {
+    if (!manager) return;
+    if (!queryCompletionId) return;
+    setCompletionId(queryCompletionId);
+    setActiveTab("financial_snapshots");
+    if (autoLoadedRef.current === queryCompletionId) return;
+    autoLoadedRef.current = queryCompletionId;
+    loadReadinessForId(queryCompletionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manager, queryCompletionId]);
 
   const overlapText = useMemo(() => overlapWarningText(overlaps), [overlaps]);
   const cards = useMemo(() => (readiness ? readinessCards(readiness) : []), [readiness]);
@@ -330,6 +353,9 @@ export default function RatesFinancialPage() {
 
   function describeError(err, label) {
     if (err instanceof ApiError && err.status === 409) return staleConflictMessage(label);
+    if (err instanceof ApiError && err.status === 404) {
+      return `Completion not found. Check the completion ID and try again.`;
+    }
     return err.message || `${label} request failed`;
   }
 
@@ -403,10 +429,12 @@ export default function RatesFinancialPage() {
     }
   }
 
-  async function loadReadiness() {
-    const id = completionId.trim();
+  async function loadReadinessForId(rawId) {
+    const id = String(rawId || "").trim();
     if (!id) {
       setError("Enter a completion_id first.");
+      setReadiness(null);
+      setSnapshots([]);
       return;
     }
     setBusy("readiness");
@@ -427,10 +455,16 @@ export default function RatesFinancialPage() {
     } catch (err) {
       setReadiness(null);
       setSnapshots([]);
+      setSnapshot(null);
+      setLines([]);
       setError(describeError(err, "Pricing readiness"));
     } finally {
       setBusy("");
     }
+  }
+
+  async function loadReadiness() {
+    await loadReadinessForId(completionId);
   }
 
   async function refreshSnapshots(id) {
@@ -569,6 +603,15 @@ export default function RatesFinancialPage() {
           </p>
         </div>
         <div className="topbar-actions">
+          {backJobPath ? (
+            <Link
+              className="btn btn-ghost"
+              style={{ width: "auto", textDecoration: "none" }}
+              to={backJobPath}
+            >
+              Back to completion
+            </Link>
+          ) : null}
           <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/">
             Jobs
           </Link>
@@ -772,11 +815,16 @@ export default function RatesFinancialPage() {
             </div>
           </div>
 
-          {!readiness && !busy && (
+          {!readiness && !busy && !error && (
             <div className="card">
               Enter a completion_id and load readiness to see resolved rates, blockers, and
-              snapshots.
+              snapshots. Opening from Completions or a job panel preloads the ID automatically —
+              snapshots are never created until you click Create draft snapshot.
             </div>
+          )}
+
+          {!readiness && busy === "readiness" && (
+            <div className="card muted">Loading pricing readiness…</div>
           )}
 
           {readiness && (

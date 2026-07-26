@@ -21,6 +21,10 @@ import {
   readinessBadge,
   summaryCards,
 } from "../completionDashboardHelpers.mjs";
+import {
+  isPricingReadinessEligible,
+  ratesPricingPath,
+} from "../ratesFinancialHelpers.mjs";
 
 const EMPTY_FILTERS = {
   ...defaultDashboardRange(),
@@ -262,7 +266,7 @@ export default function CompletionsDashboardPage() {
             Jobs
           </Link>
           <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/rates">
-            Rates
+            Rates &amp; Financial
           </Link>
           <button className="btn btn-ghost" style={{ width: "auto" }} onClick={logout} type="button">
             Log out
@@ -395,6 +399,7 @@ export default function CompletionsDashboardPage() {
                   <th>Status</th>
                   <th>Hours</th>
                   <th>Readiness</th>
+                  <th>Pricing</th>
                 </tr>
               </thead>
               <tbody>
@@ -433,6 +438,19 @@ export default function CompletionsDashboardPage() {
                       <td>
                         <span className={`badge ${badge.tone}`}>{badge.label}</span>
                         <div className="small muted">{row.export_status}</div>
+                      </td>
+                      <td>
+                        {isPricingReadinessEligible(row) ? (
+                          <Link
+                            className="btn btn-ghost"
+                            style={{ width: "auto", textDecoration: "none", padding: "0.25rem 0.5rem" }}
+                            to={ratesPricingPath(row.completion_id)}
+                          >
+                            Pricing Readiness
+                          </Link>
+                        ) : (
+                          <span className="small muted">—</span>
+                        )}
                       </td>
                     </tr>
                   );
