@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, uploadRecording } from "../api";
+import { api, downloadAuthenticatedFile, uploadRecording, getStaff } from "../api";
 import ManagerReviewPanel from "../components/ManagerReviewPanel";
 import JobCompletionPanel from "../components/JobCompletionPanel";
 import {
@@ -10,6 +10,8 @@ import {
   safeUserError,
   validateSelectedAudioFile,
 } from "../recordingFileUpload";
+import { jobSummaryPdfPath, reportsPath } from "../reportHelpers.mjs";
+import { isManagerRole } from "../jobsRange.js";
 
 function statusClass(status) {
   const s = (status || "").toLowerCase();
@@ -35,7 +37,10 @@ export default function JobDetailPage() {
   const [uploadError, setUploadError] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const uploadLockRef = useRef(false);
+  const staff = getStaff();
+  const manager = isManagerRole(staff?.role);
 
   async function load() {
     setError("");
@@ -167,6 +172,20 @@ export default function JobDetailPage() {
     }
   }
 
+  async function downloadJobPdf() {
+    setPdfBusy(true);
+    setError("");
+    try {
+      await downloadAuthenticatedFile(jobSummaryPdfPath(jobSheetId), {
+        fallbackName: `nativegrace_job_${jobSheetId}.pdf`,
+      });
+    } catch (err) {
+      setError(safeUserError(err));
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
   if (error && !data) {
     return (
       <div>
@@ -187,6 +206,27 @@ export default function JobDetailPage() {
         <Link to="/" className="small">
           ← My Jobs
         </Link>
+        <div className="topbar-actions">
+          <button
+            className="btn btn-ghost"
+            type="button"
+            style={{ width: "auto" }}
+            disabled={pdfBusy}
+            onClick={downloadJobPdf}
+          >
+            Download job PDF
+          </button>
+          <Link
+            className="btn btn-ghost"
+            style={{ width: "auto", textDecoration: "none" }}
+            to={reportsPath({
+              report_type: manager ? "Job Sheet Summary" : "Staff Work Report",
+              job_sheet_id: jobSheetId,
+            })}
+          >
+            Reports
+          </Link>
+        </div>
       </div>
 
       <div className="card">

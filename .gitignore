@@ -15,3 +15,6 @@ fieldos/data/
 fieldos/backend/data/
 fieldos/secrets/
 *.webm
+
+# Phase 3F visual QA PDFs
+fieldos/backend/tests/artifacts/

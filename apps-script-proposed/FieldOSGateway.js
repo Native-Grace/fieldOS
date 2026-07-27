@@ -162,6 +162,31 @@ function fieldosRouteRequest(payload) {
       return FieldOSRatesFinancial.approveFinancialSnapshot(payload);
     case "supersede_financial_snapshot":
       return FieldOSRatesFinancial.supersedeFinancialSnapshot(payload);
+    // Phase 3F. The FastAPI report client posts the shorter aliases
+    // (report_options / report_preview / generate_report_batch), so both spellings route here.
+    case "get_report_options":
+    case "report_options":
+      return FieldOSJobReports.getReportOptions(payload);
+    case "preview_report":
+    case "report_preview":
+      return FieldOSJobReports.previewReport(payload);
+    case "create_report_batch":
+      return FieldOSJobReports.createReportBatch(payload);
+    case "list_report_batches":
+      return FieldOSJobReports.listReportBatches(payload);
+    case "get_report_batch":
+      return FieldOSJobReports.getReportBatch(payload);
+    case "validate_report_batch":
+      return FieldOSJobReports.validateReportBatch(payload);
+    case "generate_report_data":
+    case "generate_report_batch":
+      return FieldOSJobReports.generateReportData(payload);
+    case "cancel_report_batch":
+      return FieldOSJobReports.cancelReportBatch(payload);
+    case "get_report_batch_pdf_data":
+      return FieldOSJobReports.getReportBatchPdfData(payload);
+    case "get_job_pdf_data":
+      return FieldOSJobReports.getJobPdfData(payload);
     default:
       return null;
   }

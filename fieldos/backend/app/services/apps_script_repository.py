@@ -17,6 +17,7 @@ APPS_SCRIPT_ASSUMPTIONS = [
     "tbl_job_sheets.project_id stores legacy text labels; FieldOS resolves project_name (and customer_name when a matching master exists). Unmatched labels fall back to project_name with blank customer_name.",
     "Audio uploads go to Drive from FastAPI, then register_recording; large base64 is never posted to Apps Script.",
     "process_voice_dictation is the confirmed production enqueue action.",
+    "Report actions return JSON report data only; FastAPI renders every PDF so no binary crosses the gateway.",
 ]
 
 
@@ -320,6 +321,35 @@ class AppsScriptJobRepository:
             _raise_from_apps(exc)
             raise
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return data
+
+    async def areport_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.report_action(action, body)
+        except AppsScriptError as exc:
+            _raise_from_rates_apps(exc)
+            raise
+        return result.get("data") if isinstance(result.get("data"), dict) else {}
+
+    async def aget_job_pdf_data(
+        self, job_sheet_id: str, staff_id: str, actor_role: str, *, actor_identity: str = ""
+    ) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.get_job_pdf_data(
+                {
+                    "job_sheet_id": job_sheet_id,
+                    "staff_id": staff_id,
+                    "actor_staff_id": staff_id,
+                    "actor_role": actor_role,
+                    "actor_identity": actor_identity,
+                }
+            )
+        except AppsScriptError as exc:
+            _raise_from_apps(exc)
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if not isinstance(data.get("snapshot"), dict):
+            raise HTTPException(status_code=502, detail="Apps Script returned no report snapshot.")
         return data
 
     async def arates_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:

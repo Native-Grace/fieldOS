@@ -622,6 +622,9 @@ export default function RatesFinancialPage() {
           >
             Completions
           </Link>
+          <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/reports">
+            Reports
+          </Link>
           <button className="btn btn-ghost" style={{ width: "auto" }} onClick={logout} type="button">
             Log out
           </button>

@@ -1010,3 +1010,147 @@ class FinancialSnapshotVersionRequest(BaseModel):
 
 class SupersedeFinancialSnapshotRequest(FinancialSnapshotVersionRequest):
     reason: str = Field(min_length=1, max_length=500)
+
+
+# --------------------------------------------------------------------------
+# Phase 3F — job report PDFs. Reports carry hours and narrative only; money,
+# transcripts and Drive identifiers never appear in a rendered page.
+# --------------------------------------------------------------------------
+
+
+class ReportFilters(BaseModel):
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    customer: Optional[str] = None
+    project: Optional[str] = None
+    staff_id: Optional[str] = None
+    assigned_staff_id: Optional[str] = None
+    completion_status: Optional[str] = None
+    approval_status: Optional[str] = None
+    finalised_only: Optional[bool] = None
+    billable: Optional[bool] = None
+    job_sheet_ids: Optional[List[str]] = None
+    q: Optional[str] = None
+
+
+class ReportOptionsResponse(BaseModel):
+    report_types: List[str] = Field(default_factory=list)
+    statuses: List[str] = Field(default_factory=list)
+    template_version: str = ""
+    default_filters: Dict[str, Any] = Field(default_factory=dict)
+    landscape_defaults: Dict[str, bool] = Field(default_factory=dict)
+    audiences: Dict[str, str] = Field(default_factory=dict)
+    data_mode: str
+    assumptions: List[str]
+
+
+class ReportTotals(BaseModel):
+    job_count: int = 0
+    labour_hours: float = 0
+    travel_hours: float = 0
+    billable_labour_hours: float = 0
+    machinery_hours: float = 0
+    material_items: int = 0
+
+
+class ReportPreviewItem(BaseModel):
+    job_sheet_id: str = ""
+    completion_id: str = ""
+    job_date: str = ""
+    customer_name: str = ""
+    project_name: str = ""
+    blocker_summary: str = ""
+
+
+class ReportPreviewRequest(BaseModel):
+    report_type: str = "Completion Register"
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    filters: Optional[ReportFilters] = None
+    job_sheet_ids: Optional[List[str]] = None
+
+
+class ReportPreviewResponse(BaseModel):
+    report_type: str
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    template_version: str = ""
+    job_count: int = 0
+    group_count: int = 0
+    page_estimate: int = 0
+    totals: ReportTotals
+    blockers: List[str] = Field(default_factory=list)
+    items: List[ReportPreviewItem] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class CreateReportBatchRequest(ReportPreviewRequest):
+    """Same selection surface as preview, plus output shape and an audit note."""
+
+
+    landscape: Optional[bool] = None
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class ReportBatchVersionRequest(BaseModel):
+    expected_version: Optional[int] = None
+
+
+class ReportBatchOut(BaseModel):
+    report_batch_id: str
+    report_type: str = ""
+    date_from: str = ""
+    date_to: str = ""
+    filter_json: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "Draft"
+    record_count: int = 0
+    page_estimate: int = 0
+    audience: str = "internal"
+    landscape: bool = False
+    template_version: str = ""
+    created_by: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    generated_by: str = ""
+    completed_at: Optional[Union[datetime, str]] = None
+    file_name: str = ""
+    checksum: str = ""
+    byte_size: int = 0
+    notes: str = ""
+    version: int = 1
+
+
+class ReportBatchItemOut(BaseModel):
+    report_batch_item_id: str
+    report_batch_id: str
+    job_sheet_id: str = ""
+    completion_id: str = ""
+    item_status: str = ""
+    blocker_summary: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+
+
+class ReportBatchResponse(BaseModel):
+    report_batch: ReportBatchOut
+    items: List[ReportBatchItemOut] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class ReportBatchListItem(BaseModel):
+    report_batch_id: str
+    report_type: str = ""
+    status: str = ""
+    record_count: int = 0
+    page_estimate: int = 0
+    date_from: str = ""
+    date_to: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    file_name: str = ""
+    checksum: str = ""
+    version: int = 1
+
+
+class ReportBatchListResponse(BaseModel):
+    items: List[ReportBatchListItem] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]

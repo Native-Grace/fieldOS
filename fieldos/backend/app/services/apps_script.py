@@ -46,6 +46,20 @@ FINANCIAL_SNAPSHOT_ACTIONS = (
     "supersede_financial_snapshot",
 )
 
+# Phase 3F report actions. Apps Script only ever returns report *data*; the PDF
+# itself is always rendered in FastAPI so no binary crosses the gateway.
+REPORT_ACTIONS = (
+    "report_options",
+    "report_preview",
+    "create_report_batch",
+    "list_report_batches",
+    "get_report_batch",
+    "validate_report_batch",
+    "generate_report_batch",
+    "cancel_report_batch",
+    "get_report_batch_pdf_data",
+)
+
 
 class AppsScriptError(Exception):
     """Normalized Apps Script / transport failure for repository layer."""
@@ -355,6 +369,17 @@ class AppsScriptClient:
             raise AppsScriptError(f"Unsupported snapshot action: {action}", http_status=400)
         safe_body = redact_secrets(body)
         return await self._post(action, {**safe_body, **self._column_payload()})
+
+    async def report_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Phase 3F report batch actions — returns report data, never PDF bytes."""
+        if action not in REPORT_ACTIONS:
+            raise AppsScriptError(f"Unsupported report action: {action}", http_status=400)
+        safe_body = redact_secrets(body)
+        return await self._post(action, {**safe_body, **self._column_payload()})
+
+    async def get_job_pdf_data(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("get_job_pdf_data", {**safe_body, **self._column_payload()})
 
     async def register_recording(self, body: dict[str, Any]) -> dict[str, Any]:
         safe_body = redact_secrets(body)

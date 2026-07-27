@@ -172,7 +172,20 @@ function routeRequest(payload) {
     case "get_financial_snapshot":
     case "validate_financial_snapshot":
     case "approve_financial_snapshot":
-    case "supersede_financial_snapshot": {
+    case "supersede_financial_snapshot":
+    case "get_report_options":
+    case "report_options":
+    case "preview_report":
+    case "report_preview":
+    case "create_report_batch":
+    case "list_report_batches":
+    case "get_report_batch":
+    case "validate_report_batch":
+    case "generate_report_data":
+    case "generate_report_batch":
+    case "cancel_report_batch":
+    case "get_report_batch_pdf_data":
+    case "get_job_pdf_data": {
       const fieldosResult = fieldosRouteRequest(payload);
       if (!fieldosResult) {
         throw new Error(`Routing Failure: Action '${action}' is unsupported.`);

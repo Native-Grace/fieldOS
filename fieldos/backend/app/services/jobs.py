@@ -13,10 +13,18 @@ from app.core.logging import get_logger, log_extra
 from app.services.apps_script import AppsScriptClient
 from app.services.apps_script_repository import AppsScriptJobRepository
 from app.services.mock_repository import MockJobRepository
+from app.services.pdf_reports import render_report
 from app.services.recording_files import (
     sanitize_invalid_reason,
     sanitize_recording_filename,
     validate_upload_file,
+)
+from app.services.report_math import (
+    REPORT_JOB_SHEET_SUMMARY,
+    TEMPLATE_VERSION,
+    safe_report_filename,
+    sha256_hex,
+    validate_pdf_bytes,
 )
 
 logger = get_logger(__name__)
@@ -300,6 +308,135 @@ class JobService:
             export_type=str(body.get("export_type") or ""),
         )
         return result
+
+    async def report_action(
+        self,
+        action: str,
+        *,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            **body,
+            "staff_id": staff_id,
+            "actor_staff_id": staff_id,
+            "actor_role": actor_role,
+            "actor_identity": actor_identity,
+        }
+        # Reports are read models — clients never supply snapshots or checksums.
+        for key in ("snapshot", "checksum", "byte_size", "pdf_bytes"):
+            payload.pop(key, None)
+        result = await self.repo.areport_action(action, payload)
+        log_extra(
+            logger,
+            20,
+            "Report batch action",
+            action=action,
+            staff_id=staff_id,
+            actor_role=actor_role,
+            report_batch_id=str(body.get("report_batch_id") or ""),
+            report_type=str(body.get("report_type") or ""),
+            template_version=TEMPLATE_VERSION,
+        )
+        return result
+
+    def _render_pdf(self, data: dict[str, Any], *, report_type: str = "") -> dict[str, Any]:
+        """Render + validate a PDF from returned report data. Never returns invalid bytes."""
+        resolved_type = str(data.get("report_type") or report_type)
+        snapshot = data.get("snapshot")
+        if not isinstance(snapshot, dict) or not snapshot:
+            raise HTTPException(status_code=422, detail="Report snapshot is missing or empty.")
+        meta = dict(data.get("meta") or {})
+        meta.setdefault("report_type", resolved_type)
+        meta.setdefault("report_title", resolved_type)
+        meta.setdefault("template_version", str(data.get("template_version") or TEMPLATE_VERSION))
+        try:
+            pdf = render_report(resolved_type, snapshot, meta)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            byte_size = validate_pdf_bytes(pdf)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Report PDF failed validation: {exc}"
+            ) from exc
+        checksum = sha256_hex(pdf)
+        stored = str(data.get("checksum") or "")
+        if stored and stored != checksum:
+            log_extra(
+                logger,
+                30,
+                "Report checksum drift between generate and download",
+                report_type=resolved_type,
+                stored_checksum=stored,
+                rendered_checksum=checksum,
+            )
+        return {
+            "pdf_bytes": pdf,
+            "byte_size": byte_size,
+            "checksum": checksum,
+            "stored_checksum": stored,
+            "report_type": resolved_type,
+            "content_type": "application/pdf",
+            "file_name": str(data.get("file_name") or safe_report_filename(resolved_type)),
+        }
+
+    async def report_pdf(
+        self,
+        report_batch_id: str,
+        *,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+    ) -> dict[str, Any]:
+        data = await self.report_action(
+            "get_report_batch_pdf_data",
+            staff_id=staff_id,
+            actor_role=actor_role,
+            actor_identity=actor_identity,
+            body={"report_batch_id": report_batch_id},
+        )
+        rendered = self._render_pdf(data)
+        log_extra(
+            logger,
+            20,
+            "Report PDF rendered",
+            report_batch_id=report_batch_id,
+            report_type=rendered["report_type"],
+            byte_size=rendered["byte_size"],
+            staff_id=staff_id,
+            actor_role=actor_role,
+        )
+        return rendered
+
+    async def job_summary_pdf(
+        self,
+        job_sheet_id: str,
+        *,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+    ) -> dict[str, Any]:
+        data = await self.repo.aget_job_pdf_data(
+            job_sheet_id,
+            staff_id,
+            actor_role,
+            actor_identity=actor_identity,
+        )
+        rendered = self._render_pdf(data, report_type=REPORT_JOB_SHEET_SUMMARY)
+        rendered.setdefault("job_sheet_id", job_sheet_id)
+        log_extra(
+            logger,
+            20,
+            "Job summary PDF rendered",
+            job_sheet_id=job_sheet_id,
+            byte_size=rendered["byte_size"],
+            staff_id=staff_id,
+            actor_role=actor_role,
+        )
+        return rendered
 
     async def rates_action(
         self,

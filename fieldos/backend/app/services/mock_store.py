@@ -281,6 +281,57 @@ class MockStore:
         self._write(self.export_batches_path, rows)
         return batch
 
+    # Phase 3F report batches. Items live in their own collection so a batch row
+    # stays small even when a register covers hundreds of jobs.
+    @property
+    def report_batches_path(self) -> Path:
+        return self.root / "report_batches.json"
+
+    @property
+    def report_batch_items_path(self) -> Path:
+        return self.root / "report_batch_items.json"
+
+    def list_report_batches(self) -> list[dict[str, Any]]:
+        return self._read(self.report_batches_path)
+
+    def get_report_batch(self, report_batch_id: str) -> dict[str, Any] | None:
+        for row in self.list_report_batches():
+            if str(row.get("report_batch_id")) == str(report_batch_id):
+                return row
+        return None
+
+    def upsert_report_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+        rows = self.list_report_batches()
+        batch_id = str(batch.get("report_batch_id") or "")
+        replaced = False
+        for idx, row in enumerate(rows):
+            if str(row.get("report_batch_id")) == batch_id:
+                rows[idx] = batch
+                replaced = True
+                break
+        if not replaced:
+            rows.append(batch)
+        self._write(self.report_batches_path, rows)
+        return batch
+
+    def list_report_batch_items(self, report_batch_id: str | None = None) -> list[dict[str, Any]]:
+        rows = self._read(self.report_batch_items_path)
+        if report_batch_id is None:
+            return rows
+        return [row for row in rows if str(row.get("report_batch_id")) == str(report_batch_id)]
+
+    def replace_report_batch_items(
+        self, report_batch_id: str, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in self._read(self.report_batch_items_path)
+            if str(row.get("report_batch_id")) != str(report_batch_id)
+        ]
+        rows.extend(items)
+        self._write(self.report_batch_items_path, rows)
+        return items
+
     # Phase 3E rates / financial collections. Never seeded — rates are configured, not invented.
     RATES_COLLECTIONS = {
         "rate_cards": "rate_cards.json",

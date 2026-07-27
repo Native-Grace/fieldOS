@@ -89,6 +89,9 @@ export default function JobsPage() {
               Rates &amp; Financial
             </Link>
           )}
+          <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/reports">
+            Reports
+          </Link>
           <label className="range-select">
             <span className="visually-hidden">Date range</span>
             <select

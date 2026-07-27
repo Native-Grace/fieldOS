@@ -1,7 +1,9 @@
 from datetime import date, datetime, timezone
+from io import BytesIO
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from app.core.config import Settings, get_settings
 from app.core.roles import actor_identity, is_manager_or_admin, normalize_role, require_manager_or_admin
@@ -15,6 +17,7 @@ from app.models.schemas import (
     CompletionUpdateRequest,
     CreateExportBatchRequest,
     CreateFinancialSnapshotRequest,
+    CreateReportBatchRequest,
     CustomerPricingIn,
     CustomerPricingListResponse,
     CustomerPricingResponse,
@@ -70,6 +73,12 @@ from app.models.schemas import (
     RecordingOut,
     RecordingUploadResponse,
     ReopenJobRequest,
+    ReportBatchListResponse,
+    ReportBatchResponse,
+    ReportBatchVersionRequest,
+    ReportOptionsResponse,
+    ReportPreviewRequest,
+    ReportPreviewResponse,
     ReturnJobRequest,
     ReviewEditRequest,
     StaffOut,
@@ -796,6 +805,243 @@ async def download_export(
             "X-Export-Checksum": str(result.get("checksum") or ""),
         },
     )
+
+
+# --------------------------------------------------------------------------
+# Phase 3F — job report PDFs. Managers reach every report type; staff are
+# limited to the Staff Work Report over their own labour, plus a summary for a
+# job sheet assigned to them. PDFs are rendered here from report data and
+# validated before any bytes reach the client.
+# --------------------------------------------------------------------------
+
+
+def _report_role(claims: dict) -> str:
+    return normalize_role(str(claims.get("role") or ""))
+
+
+async def _report_call(
+    action: str,
+    *,
+    claims: dict,
+    service: JobService,
+    body: dict,
+) -> dict:
+    return await service.report_action(
+        action,
+        staff_id=str(claims["sub"]),
+        actor_role=_report_role(claims),
+        actor_identity=actor_identity(claims),
+        body=body,
+    )
+
+
+def _report_batch_response(
+    result: dict, settings: Settings, service: JobService
+) -> ReportBatchResponse:
+    from app.models.schemas import ReportBatchItemOut, ReportBatchOut
+
+    batch = result.get("report_batch") or result
+    return ReportBatchResponse(
+        report_batch=ReportBatchOut.model_validate(batch),
+        items=[ReportBatchItemOut.model_validate(item) for item in (result.get("items") or [])],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+def _report_selection_body(body: ReportPreviewRequest) -> dict:
+    payload = body.model_dump(exclude_none=True)
+    if body.filters is not None:
+        payload["filters"] = body.filters.model_dump(exclude_none=True)
+    return payload
+
+
+def _pdf_response(rendered: dict) -> StreamingResponse:
+    file_name = str(rendered.get("file_name") or "report.pdf").replace('"', "")
+    pdf = rendered["pdf_bytes"]
+    return StreamingResponse(
+        BytesIO(pdf),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_name}"',
+            "Content-Length": str(len(pdf)),
+            "X-Report-Checksum": str(rendered.get("checksum") or ""),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/reports/options", response_model=ReportOptionsResponse)
+async def report_options(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ReportOptionsResponse:
+    result = await _report_call("report_options", claims=claims, service=service, body={})
+    return ReportOptionsResponse(
+        **result,
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/reports/preview", response_model=ReportPreviewResponse)
+async def preview_report(
+    body: ReportPreviewRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ReportPreviewResponse:
+    result = await _report_call(
+        "report_preview",
+        claims=claims,
+        service=service,
+        body=_report_selection_body(body),
+    )
+    from app.models.schemas import ReportPreviewItem, ReportTotals
+
+    return ReportPreviewResponse(
+        report_type=str(result.get("report_type") or body.report_type),
+        filters=result.get("filters") or {},
+        template_version=str(result.get("template_version") or ""),
+        job_count=int(result.get("job_count") or 0),
+        group_count=int(result.get("group_count") or 0),
+        page_estimate=int(result.get("page_estimate") or 0),
+        totals=ReportTotals.model_validate(result.get("totals") or {}),
+        blockers=[str(b) for b in (result.get("blockers") or [])],
+        items=[ReportPreviewItem.model_validate(item) for item in (result.get("items") or [])],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/reports", response_model=ReportBatchListResponse)
+async def list_reports(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ReportBatchListResponse:
+    result = await _report_call("list_report_batches", claims=claims, service=service, body={})
+    from app.models.schemas import ReportBatchListItem
+
+    return ReportBatchListResponse(
+        items=[ReportBatchListItem.model_validate(item) for item in (result.get("items") or [])],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/reports", response_model=ReportBatchResponse)
+async def create_report(
+    body: CreateReportBatchRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ReportBatchResponse:
+    result = await _report_call(
+        "create_report_batch",
+        claims=claims,
+        service=service,
+        body=_report_selection_body(body),
+    )
+    return _report_batch_response(result, settings, service)
+
+
+@router.get("/reports/{report_batch_id}", response_model=ReportBatchResponse)
+async def get_report(
+    report_batch_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ReportBatchResponse:
+    result = await _report_call(
+        "get_report_batch",
+        claims=claims,
+        service=service,
+        body={"report_batch_id": report_batch_id},
+    )
+    return _report_batch_response(result, settings, service)
+
+
+@router.post("/reports/{report_batch_id}/validate", response_model=ReportBatchResponse)
+async def validate_report(
+    report_batch_id: str,
+    body: ReportBatchVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ReportBatchResponse:
+    result = await _report_call(
+        "validate_report_batch",
+        claims=claims,
+        service=service,
+        body={"report_batch_id": report_batch_id, **body.model_dump(exclude_none=True)},
+    )
+    return _report_batch_response(result, settings, service)
+
+
+@router.post("/reports/{report_batch_id}/generate", response_model=ReportBatchResponse)
+async def generate_report(
+    report_batch_id: str,
+    body: ReportBatchVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ReportBatchResponse:
+    result = await _report_call(
+        "generate_report_batch",
+        claims=claims,
+        service=service,
+        body={"report_batch_id": report_batch_id, **body.model_dump(exclude_none=True)},
+    )
+    return _report_batch_response(result, settings, service)
+
+
+@router.post("/reports/{report_batch_id}/cancel", response_model=ReportBatchResponse)
+async def cancel_report(
+    report_batch_id: str,
+    body: ReportBatchVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> ReportBatchResponse:
+    result = await _report_call(
+        "cancel_report_batch",
+        claims=claims,
+        service=service,
+        body={"report_batch_id": report_batch_id, **body.model_dump(exclude_none=True)},
+    )
+    return _report_batch_response(result, settings, service)
+
+
+@router.get("/reports/{report_batch_id}/download")
+async def download_report(
+    report_batch_id: str,
+    claims: dict = Depends(get_current_claims),
+    service: JobService = Depends(job_service),
+) -> StreamingResponse:
+    rendered = await service.report_pdf(
+        report_batch_id,
+        staff_id=str(claims["sub"]),
+        actor_role=_report_role(claims),
+        actor_identity=actor_identity(claims),
+    )
+    return _pdf_response(rendered)
+
+
+@router.get("/jobs/{job_sheet_id}/summary.pdf")
+async def job_summary_pdf(
+    job_sheet_id: str,
+    claims: dict = Depends(get_current_claims),
+    service: JobService = Depends(job_service),
+) -> StreamingResponse:
+    rendered = await service.job_summary_pdf(
+        job_sheet_id,
+        staff_id=str(claims["sub"]),
+        actor_role=_report_role(claims),
+        actor_identity=actor_identity(claims),
+    )
+    return _pdf_response(rendered)
 
 
 # --------------------------------------------------------------------------

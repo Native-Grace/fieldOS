@@ -448,3 +448,96 @@ function migrateSchemaForRatesFinancial() {
   ensureTable("tbl_job_materials", jobMaterialLinkHeaders);
   Logger.log("Phase 3E rates and financial migration completed.");
 }
+
+/**
+ * Phase 3F: ensure job report batch sheets exist.
+ * Non-destructive — creates missing tabs and appends missing columns only.
+ * Stores report data only: no PDF bytes, transcripts, Drive IDs or secrets.
+ *
+ * Header arrays are defined inline so this migration works even when
+ * JobReports.js has not yet been pushed into the Apps Script project.
+ * Keep these lists in sync with FIELDOS_REPORT_BATCH_HEADERS_ and
+ * FIELDOS_REPORT_ITEM_HEADERS_ in JobReports.js.
+ */
+function migrateSchemaForJobReports() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (!spreadsheetId) {
+    throw new Error("Migration Error: 'SPREADSHEET_ID' script property is missing or blank in Project Settings.");
+  }
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+
+  const reportBatchHeaders = [
+    "report_batch_id",
+    "report_type",
+    "date_from",
+    "date_to",
+    "filter_json",
+    "group_by",
+    "status",
+    "record_count",
+    "line_count",
+    "group_count",
+    "estimated_pages",
+    "template_version",
+    "scope_staff_id",
+    "created_by",
+    "created_at",
+    "validated_by",
+    "validated_at",
+    "completed_at",
+    "file_name",
+    "checksum",
+    "blocker_summary",
+    "notes",
+    "snapshot_json",
+    "version"
+  ];
+  const reportBatchItemHeaders = [
+    "report_batch_item_id",
+    "report_batch_id",
+    "job_sheet_id",
+    "completion_id",
+    "group_key",
+    "group_label",
+    "sort_order",
+    "item_status",
+    "line_count",
+    "blocker_summary",
+    "created_at"
+  ];
+
+  function ensureTable(sheetName, columns) {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.getRange(1, 1, 1, columns.length).setValues([columns]);
+      sheet
+        .getRange(1, 1, 1, columns.length)
+        .setFontWeight("bold")
+        .setBackground("#f3f3f3")
+        .setHorizontalAlignment("left");
+      sheet.autoResizeColumns(1, columns.length);
+      Logger.log("Success [" + sheetName + "]: Created sheet with headers.");
+      return;
+    }
+    const lastCol = sheet.getLastColumn();
+    const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+    let nextCol = lastCol + 1;
+    columns.forEach(function (colName) {
+      if (headers.indexOf(colName) >= 0) {
+        Logger.log("Notice [" + sheetName + "]: '" + colName + "' already exists. Skipping.");
+        return;
+      }
+      const cell = sheet.getRange(1, nextCol);
+      cell.setValue(colName);
+      cell.setFontWeight("bold").setBackground("#f3f3f3").setHorizontalAlignment("left");
+      sheet.autoResizeColumns(nextCol, 1);
+      Logger.log("Success [" + sheetName + "]: Added column -> " + colName);
+      nextCol += 1;
+    });
+  }
+
+  ensureTable("tbl_report_batches", reportBatchHeaders);
+  ensureTable("tbl_report_batch_items", reportBatchItemHeaders);
+  Logger.log("Phase 3F job report migration completed.");
+}

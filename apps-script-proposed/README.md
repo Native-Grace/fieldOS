@@ -24,9 +24,12 @@ Live Web App URL / secrets remain in local `.env` only (never commit). Further A
 | `RatesFinancialHelpers.js` | Phase 3E pure money/rate-resolution helpers (integer cents, half-up per line). Mirrors `fieldos/backend/app/services/rates_math.py` |
 | `RatesFinancial.js` | Phase 3E `FieldOSRatesFinancial` — rate cards, labour/machinery rates, material catalog, customer pricing, payroll/Xero mappings, pricing readiness, financial snapshots |
 | `Repositories.js` | Adds the nine Phase 3E repositories (`RC`, `LR`, `MR`, `MATC`, `CP`, `PM`, `XM`, `CFS`, `CFL`) |
-| `Setup.js` | Adds `migrateSchemaForRatesFinancial()` — non-destructive tab/column creation |
-| `Router.js` | Routes the 28 Phase 3E actions |
+| `Setup.js` | Adds `migrateSchemaForRatesFinancial()` and `migrateSchemaForJobReports()` — non-destructive tab/column creation |
+| `Router.js` | Routes the 28 Phase 3E actions plus the 9 Phase 3F report actions |
 | `JobCompletion.js` | Completion reads used by pricing readiness |
+| `JobReportHelpers.js` | Phase 3F pure report helpers — forbidden-key scrub, display-only task lines, filters, grouping, page estimate, PDF data shape, filenames, audit payload |
+| `JobReports.js` | Phase 3F `FieldOSJobReports` — report options, preview, report batches (Draft → Validated → Generated / Cancelled) and single-job PDF data |
+| `Repositories.js` | Also adds the two Phase 3F repositories (`RPT`, `RPI`) |
 
 ### Phase 3E deploy note
 
@@ -34,6 +37,15 @@ Push `RatesFinancialHelpers.js` and `RatesFinancial.js` alongside the updated Ga
 Repositories / Setup / JobCompletion, then run `migrateSchemaForRatesFinancial()` against a
 non-production spreadsheet first. The migration seeds no rate values — managers enter them via
 the `/rates` UI. See `docs/PHASE3E_RATES_AND_FINANCIAL_STAGING.md`.
+
+### Phase 3F deploy note
+
+Push `JobReportHelpers.js` and `JobReports.js` alongside the updated Gateway / Router /
+Repositories / Setup, then run `migrateSchemaForJobReports()` against a non-production
+spreadsheet first. The migration only creates `tbl_report_batches` and
+`tbl_report_batch_items`. Report batches freeze scrubbed report **data** in
+`snapshot_json` — never PDF bytes, transcripts, Drive identifiers or secrets. Generated
+batches are immutable; regenerating means creating a new batch.
 
 ### Live verification (Phase 2 voice path)
 

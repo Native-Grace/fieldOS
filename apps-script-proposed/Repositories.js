@@ -33,6 +33,10 @@ const XeroMappingRepository = new BaseRepository('tbl_xero_mappings', 'xero_mapp
 const CompletionFinancialRepository = new BaseRepository('tbl_completion_financials', 'financial_snapshot_id', 'CFS');
 const CompletionFinancialLineRepository = new BaseRepository('tbl_completion_financial_lines', 'financial_line_id', 'CFL');
 
+// Phase 3F — job report batches and their per-job items.
+const ReportBatchRepository = new BaseRepository('tbl_report_batches', 'report_batch_id', 'RPT');
+const ReportBatchItemRepository = new BaseRepository('tbl_report_batch_items', 'report_batch_item_id', 'RPI');
+
 const RecordingRepository = new BaseRepository({
   tableName: 'tbl_recordings',
   idField: 'recording_id',
