@@ -15,13 +15,16 @@ import {
   canGenerateReport,
   canValidateReport,
   confirmGenerateReportMessage,
+  defaultGroupByForReportType,
   defaultReportRange,
   emptyPreviewMessage,
+  groupByChoicesForReportType,
   isManagerRole,
   jobSummaryPdfPath,
   parseReportsSearch,
   previewMetricCards,
-  reportTypesForRole,
+  reportTypeOptionsForRole,
+  reportTypeSelectOptions,
   staleReportConflictMessage,
 } from "../reportHelpers.mjs";
 
@@ -32,19 +35,23 @@ export default function ReportsPage() {
   const query = parseReportsSearch(searchParams);
 
   const [options, setOptions] = useState({ report_types: REPORT_TYPES });
-  const [form, setForm] = useState(() => ({
-    ...defaultReportRange(),
-    report_type: query.report_type || (manager ? "Completion Register" : "Staff Work Report"),
-    customer: "",
-    project: "",
-    assigned_staff_id: "",
-    completion_status: "",
-    approval_status: "",
-    job_sheet_id: query.job_sheet_id || "",
-    billable: "",
-    date_from: query.date_from || defaultReportRange().date_from,
-    date_to: query.date_to || defaultReportRange().date_to,
-  }));
+  const [form, setForm] = useState(() => {
+    const reportType = query.report_type || (manager ? "Completion Register" : "Staff Work Report");
+    return {
+      ...defaultReportRange(),
+      report_type: reportType,
+      group_by: query.group_by || defaultGroupByForReportType(REPORT_TYPES, reportType),
+      customer: "",
+      project: "",
+      assigned_staff_id: "",
+      completion_status: "",
+      approval_status: "",
+      job_sheet_id: query.job_sheet_id || "",
+      billable: "",
+      date_from: query.date_from || defaultReportRange().date_from,
+      date_to: query.date_to || defaultReportRange().date_to,
+    };
+  });
   const [preview, setPreview] = useState(null);
   const [batches, setBatches] = useState([]);
   const [selectedBatch, setSelectedBatch] = useState(null);
@@ -55,8 +62,13 @@ export default function ReportsPage() {
   const [message, setMessage] = useState("");
 
   const availableTypes = useMemo(
-    () => reportTypesForRole(staff?.role, options.report_types || REPORT_TYPES),
+    () => reportTypeOptionsForRole(staff?.role, options.report_types || REPORT_TYPES),
     [staff?.role, options.report_types]
+  );
+  const typeSelectOptions = useMemo(() => reportTypeSelectOptions(availableTypes), [availableTypes]);
+  const groupByChoices = useMemo(
+    () => groupByChoicesForReportType(availableTypes, form.report_type),
+    [availableTypes, form.report_type]
   );
   const cards = useMemo(() => (preview ? previewMetricCards(preview) : []), [preview]);
 
@@ -68,14 +80,25 @@ export default function ReportsPage() {
   // Preserve deep-link job/report filters from the URL without auto-generating a PDF.
   useEffect(() => {
     const next = parseReportsSearch(searchParams);
-    setForm((prev) => ({
-      ...prev,
-      report_type: next.report_type || prev.report_type,
-      job_sheet_id: next.job_sheet_id || prev.job_sheet_id,
-      date_from: next.date_from || prev.date_from,
-      date_to: next.date_to || prev.date_to,
-    }));
-  }, [searchParams]);
+    setForm((prev) => {
+      const reportType = next.report_type || prev.report_type;
+      const choices = groupByChoicesForReportType(options.report_types || REPORT_TYPES, reportType);
+      const groupBy =
+        next.group_by && choices.includes(next.group_by)
+          ? next.group_by
+          : choices.includes(prev.group_by)
+            ? prev.group_by
+            : defaultGroupByForReportType(options.report_types || REPORT_TYPES, reportType);
+      return {
+        ...prev,
+        report_type: reportType,
+        group_by: groupBy,
+        job_sheet_id: next.job_sheet_id || prev.job_sheet_id,
+        date_from: next.date_from || prev.date_from,
+        date_to: next.date_to || prev.date_to,
+      };
+    });
+  }, [searchParams, options.report_types]);
 
   async function loadBootstrap() {
     setLoading(true);
@@ -84,11 +107,16 @@ export default function ReportsPage() {
       const [opts, list] = await Promise.all([api("/reports/options"), api("/reports")]);
       setOptions(opts);
       setBatches(list.items || []);
-      const types = reportTypesForRole(staff?.role, opts.report_types || REPORT_TYPES);
-      setForm((prev) => ({
-        ...prev,
-        report_type: types.includes(prev.report_type) ? prev.report_type : types[0],
-      }));
+      const types = reportTypeOptionsForRole(staff?.role, opts.report_types || REPORT_TYPES);
+      setForm((prev) => {
+        const reportType = types.some((t) => t.report_type === prev.report_type)
+          ? prev.report_type
+          : types[0]?.report_type || prev.report_type;
+        const groupBy = groupByChoicesForReportType(types, reportType).includes(prev.group_by)
+          ? prev.group_by
+          : defaultGroupByForReportType(types, reportType);
+        return { ...prev, report_type: reportType, group_by: groupBy };
+      });
     } catch (err) {
       setError(err.message || "Failed to load reports");
     } finally {
@@ -97,7 +125,15 @@ export default function ReportsPage() {
   }
 
   function onFormChange(key, value) {
-    setForm((prev) => ({ ...prev, [key]: value }));
+    setForm((prev) => {
+      if (key !== "report_type") return { ...prev, [key]: value };
+      const nextType = value;
+      return {
+        ...prev,
+        report_type: nextType,
+        group_by: defaultGroupByForReportType(availableTypes, nextType),
+      };
+    });
   }
 
   function syncQueryFromForm(nextForm = form) {
@@ -106,6 +142,7 @@ export default function ReportsPage() {
     if (nextForm.job_sheet_id) params.job_sheet_id = nextForm.job_sheet_id;
     if (nextForm.date_from) params.date_from = nextForm.date_from;
     if (nextForm.date_to) params.date_to = nextForm.date_to;
+    if (nextForm.group_by) params.group_by = nextForm.group_by;
     setSearchParams(params, { replace: true });
   }
 
@@ -321,11 +358,29 @@ export default function ReportsPage() {
               value={form.report_type}
               onChange={(e) => onFormChange("report_type", e.target.value)}
             >
-              {availableTypes.map((type) => (
-                <option key={type} value={type}>
-                  {type}
+              {typeSelectOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Group by</span>
+            <select
+              value={groupByChoices.includes(form.group_by) ? form.group_by : groupByChoices[0] || ""}
+              onChange={(e) => onFormChange("group_by", e.target.value)}
+              disabled={!groupByChoices.length}
+            >
+              {groupByChoices.length === 0 ? (
+                <option value="">—</option>
+              ) : (
+                groupByChoices.map((choice) => (
+                  <option key={choice} value={choice}>
+                    {choice}
+                  </option>
+                ))
+              )}
             </select>
           </label>
           <label className="field">

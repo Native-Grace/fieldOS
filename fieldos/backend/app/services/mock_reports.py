@@ -38,6 +38,7 @@ from app.services.report_math import (
     group_bundles,
     matches_report_filters,
     report_readiness,
+    report_type_option,
     reportable_rows,
     safe_report_filename,
     scrub_report_record,
@@ -375,8 +376,14 @@ class MockReportsMixin:
             )
             defaults = default_dashboard_range()
             return {
-                "report_types": allowed,
+                "report_types": [report_type_option(name) for name in allowed],
                 "statuses": [
+                    STATUS_REPORT_DRAFT,
+                    STATUS_REPORT_VALIDATED,
+                    STATUS_REPORT_GENERATED,
+                    STATUS_REPORT_CANCELLED,
+                ],
+                "report_statuses": [
                     STATUS_REPORT_DRAFT,
                     STATUS_REPORT_VALIDATED,
                     STATUS_REPORT_GENERATED,
@@ -388,6 +395,20 @@ class MockReportsMixin:
                     key: bool(value) for key, value in REPORT_LANDSCAPE_DEFAULT.items()
                 },
                 "audiences": {key: REPORT_AUDIENCE[key] for key in allowed},
+                "filter_keys": [
+                    "date_from",
+                    "date_to",
+                    "staff",
+                    "customer",
+                    "project",
+                    "completion_status",
+                    "approval_status",
+                    "billable",
+                    "job_sheet_id",
+                    "completion_id",
+                ],
+                "scoped_to_staff_id": "" if is_manager_or_admin(actor_role) else staff_id,
+                "actor_role": actor_role,
             }
 
         if action == "report_preview":

@@ -286,10 +286,13 @@ def test_report_typed_schemas_smoke() -> None:
         ReportBatchListItem,
         ReportBatchOut,
         ReportFilters,
+        ReportOptionsResponse,
         ReportPreviewItem,
         ReportPreviewRequest,
         ReportTotals,
+        ReportTypeOption,
     )
+    from app.services.report_math import normalise_report_type_option, report_type_option
 
     assert REPORT_TYPES == (
         REPORT_JOB_SHEET_SUMMARY,
@@ -300,12 +303,79 @@ def test_report_typed_schemas_smoke() -> None:
     )
     assert TEMPLATE_VERSION == "3F.1"
 
+    rich = ReportTypeOption.model_validate(
+        {
+            "report_type": REPORT_CLIENT_JOB_REPORT,
+            "default_group_by": "customer",
+            "allowed_group_by": ["customer", "project", "job_sheet_id"],
+        }
+    )
+    assert rich.report_type == REPORT_CLIENT_JOB_REPORT
+    assert rich.group_by == ["customer", "project", "job_sheet_id"]
+    assert rich.default_group_by == "customer"
+    assert rich.label == REPORT_CLIENT_JOB_REPORT
+
+    legacy = ReportTypeOption.model_validate(REPORT_STAFF_WORK_REPORT)
+    assert legacy.report_type == REPORT_STAFF_WORK_REPORT
+    assert legacy.group_by == ["staff_id", "job_sheet_id"]
+    assert legacy.default_group_by == "staff_id"
+
+    empty_groups = ReportTypeOption.model_validate(
+        {"report_type": "Custom Experimental", "allowed_group_by": [], "group_by": []}
+    )
+    assert empty_groups.group_by == []
+    assert empty_groups.default_group_by == ""
+
+    live_shaped = ReportOptionsResponse.model_validate(
+        {
+            "report_types": [
+                {
+                    "report_type": name,
+                    "default_group_by": report_type_option(name)["default_group_by"],
+                    "allowed_group_by": report_type_option(name)["allowed_group_by"],
+                }
+                for name in REPORT_TYPES
+            ],
+            "report_statuses": ["Draft", "Validated", "Generated", "Cancelled"],
+            "template_version": TEMPLATE_VERSION,
+            "max_records": 500,
+            "filter_keys": ["date_from", "date_to", "staff"],
+            "scoped_to_staff_id": "",
+            "actor_role": "manager",
+            "data_mode": "apps_script",
+            "assumptions": [],
+        }
+    )
+    assert len(live_shaped.report_types) == 5
+    assert live_shaped.statuses == ["Draft", "Validated", "Generated", "Cancelled"]
+    assert {opt.report_type for opt in live_shaped.report_types} == set(REPORT_TYPES)
+    assert live_shaped.report_types[0].group_by
+
+    legacy_options = ReportOptionsResponse.model_validate(
+        {
+            "report_types": list(REPORT_TYPES),
+            "statuses": ["Draft"],
+            "template_version": TEMPLATE_VERSION,
+            "data_mode": "mock",
+            "assumptions": [],
+        }
+    )
+    assert all(isinstance(opt.report_type, str) and opt.group_by is not None for opt in legacy_options.report_types)
+    assert normalise_report_type_option(REPORT_COMPLETION_REGISTER)["group_by"] == [
+        "job_month",
+        "customer",
+        "project",
+        "none",
+    ]
+
     preview = ReportPreviewRequest(
         report_type=REPORT_STAFF_WORK_REPORT,
         filters=ReportFilters(date_from="2026-07-01", staff_id="STAFF-DEMO001"),
+        group_by="staff_id",
     )
     assert preview.filters is not None
     assert preview.filters.staff_id == "STAFF-DEMO001"
+    assert preview.group_by == "staff_id"
 
     create = CreateReportBatchRequest(report_type=REPORT_COMPLETION_REGISTER, landscape=True)
     assert create.landscape is True
@@ -417,14 +487,18 @@ def test_report_options_and_preview_by_role(client: TestClient) -> None:
     options = client.get("/api/v1/reports/options", headers=manager)
     assert options.status_code == 200, options.text
     body = options.json()
-    assert body["report_types"] == list(REPORT_TYPES)
+    assert [row["report_type"] for row in body["report_types"]] == list(REPORT_TYPES)
+    assert body["report_types"][0]["group_by"] == ["job_sheet_id"]
+    assert body["report_types"][0]["default_group_by"] == "job_sheet_id"
     assert body["template_version"] == TEMPLATE_VERSION
     assert body["audiences"][REPORT_CLIENT_JOB_REPORT] == "client"
     assert body["landscape_defaults"][REPORT_COMPLETION_REGISTER] is True
 
     staff_options = client.get("/api/v1/reports/options", headers=staff)
     assert staff_options.status_code == 200
-    assert staff_options.json()["report_types"] == [REPORT_STAFF_WORK_REPORT]
+    staff_types = staff_options.json()["report_types"]
+    assert [row["report_type"] for row in staff_types] == [REPORT_STAFF_WORK_REPORT]
+    assert staff_types[0]["group_by"] == ["staff_id", "job_sheet_id"]
 
     preview = client.post(
         "/api/v1/reports/preview",

@@ -71,6 +71,100 @@ STAFF_ALLOWED_REPORT_TYPES = (REPORT_STAFF_WORK_REPORT,)
 
 REPORT_LANDSCAPE_DEFAULT = {REPORT_COMPLETION_REGISTER: True}
 
+# Mirrors Apps Script FIELDOS_REPORT_GROUPINGS_ — used by options + normalisers.
+REPORT_GROUPINGS: dict[str, dict[str, Any]] = {
+    REPORT_JOB_SHEET_SUMMARY: {
+        "default_group": "job_sheet_id",
+        "allowed": ["job_sheet_id"],
+    },
+    REPORT_STAFF_WORK_REPORT: {
+        "default_group": "staff_id",
+        "allowed": ["staff_id", "job_sheet_id"],
+    },
+    REPORT_CLIENT_JOB_REPORT: {
+        "default_group": "customer",
+        "allowed": ["customer", "project", "job_sheet_id"],
+    },
+    REPORT_PROJECT_ACTIVITY_REPORT: {
+        "default_group": "project",
+        "allowed": ["project", "customer", "job_month"],
+    },
+    REPORT_COMPLETION_REGISTER: {
+        "default_group": "job_month",
+        "allowed": ["job_month", "customer", "project", "none"],
+    },
+}
+
+
+def report_type_option(report_type: str) -> dict[str, Any]:
+    """Build the rich report-type option object Apps Script returns."""
+    name = str(report_type or "").strip()
+    spec = REPORT_GROUPINGS.get(name) or {"default_group": "job_sheet_id", "allowed": ["job_sheet_id"]}
+    allowed = list(spec.get("allowed") or [])
+    default_group = str(spec.get("default_group") or (allowed[0] if allowed else ""))
+    return {
+        "report_type": name,
+        "label": name,
+        "default_group_by": default_group,
+        "allowed_group_by": allowed,
+        "group_by": allowed,
+        "supports_landscape": bool(REPORT_LANDSCAPE_DEFAULT.get(name)),
+    }
+
+
+def normalise_report_type_option(raw: Any) -> dict[str, Any]:
+    """Accept a string or rich object; always return ReportTypeOption-shaped dict."""
+    if isinstance(raw, str):
+        return report_type_option(raw) if raw.strip() in REPORT_GROUPINGS else {
+            "report_type": raw.strip(),
+            "label": raw.strip(),
+            "default_group_by": "",
+            "allowed_group_by": [],
+            "group_by": [],
+            "supports_landscape": False,
+        }
+    if not isinstance(raw, dict):
+        return report_type_option("")
+    name = str(raw.get("report_type") or raw.get("type") or "").strip()
+    base = report_type_option(name) if name else {
+        "report_type": "",
+        "label": "",
+        "default_group_by": "",
+        "allowed_group_by": [],
+        "group_by": [],
+        "supports_landscape": False,
+    }
+    allowed = raw.get("allowed_group_by")
+    if allowed is None:
+        allowed = raw.get("group_by")
+    if isinstance(allowed, str):
+        allowed = [allowed] if allowed.strip() else []
+    if allowed is None:
+        allowed = list(base["allowed_group_by"])
+    if not isinstance(allowed, list):
+        allowed = list(base["allowed_group_by"])
+    allowed = [str(item).strip() for item in allowed if str(item).strip()]
+    default_group = str(raw.get("default_group_by") or "").strip()
+    if not default_group:
+        # Explicit empty allowed_group_by stays empty; otherwise fall back to catalogue default.
+        if "allowed_group_by" in raw or "group_by" in raw:
+            default_group = allowed[0] if allowed else ""
+        else:
+            default_group = allowed[0] if allowed else str(base["default_group_by"] or "")
+    landscape = raw.get("supports_landscape")
+    if landscape is None:
+        landscape = base.get("supports_landscape")
+    return {
+        "report_type": name or str(base["report_type"]),
+        "label": str(raw.get("label") or name or base["label"] or ""),
+        "description": raw.get("description"),
+        "default_group_by": default_group,
+        "allowed_group_by": allowed,
+        "group_by": allowed,
+        "supports_landscape": bool(landscape) if landscape is not None else None,
+    }
+
+
 MAX_REPORT_PDF_BYTES = 15 * 1024 * 1024
 PDF_MAGIC = b"%PDF"
 

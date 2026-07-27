@@ -907,6 +907,7 @@ async def preview_report(
         job_count=int(result.get("job_count") or 0),
         group_count=int(result.get("group_count") or 0),
         page_estimate=int(result.get("page_estimate") or 0),
+        group_by=str(result.get("group_by") or body.group_by or ""),
         totals=ReportTotals.model_validate(result.get("totals") or {}),
         blockers=[str(b) for b in (result.get("blockers") or [])],
         items=[ReportPreviewItem.model_validate(item) for item in (result.get("items") or [])],

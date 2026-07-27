@@ -15,12 +15,19 @@ import {
   canGenerateReport,
   canValidateReport,
   confirmGenerateReportMessage,
+  defaultGroupByForReportType,
   defaultReportRange,
   emptyPreviewMessage,
+  groupByChoicesForReportType,
   isManagerRole,
   jobSummaryPdfPath,
+  normalizeReportTypeOption,
+  normalizeReportTypeOptions,
   parseReportsSearch,
   previewMetricCards,
+  reportTypeLabel,
+  reportTypeOptionsForRole,
+  reportTypeSelectOptions,
   reportTypesForRole,
   reportsPath,
   staffAllowedReportTypes,
@@ -28,12 +35,93 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const LIVE_REPORT_TYPES = [
+  {
+    report_type: "Job Sheet Summary",
+    default_group_by: "job_sheet_id",
+    allowed_group_by: ["job_sheet_id"],
+  },
+  {
+    report_type: "Staff Work Report",
+    default_group_by: "staff_id",
+    allowed_group_by: ["staff_id", "job_sheet_id"],
+  },
+  {
+    report_type: "Client Job Report",
+    default_group_by: "customer",
+    allowed_group_by: ["customer", "project", "job_sheet_id"],
+  },
+  {
+    report_type: "Project Activity Report",
+    default_group_by: "project",
+    allowed_group_by: ["project", "customer", "job_month"],
+  },
+  {
+    report_type: "Completion Register",
+    default_group_by: "job_month",
+    allowed_group_by: ["job_month", "customer", "project", "none"],
+  },
+];
+
 test("manager role gate and staff-limited report types", () => {
   assert.equal(isManagerRole("manager"), true);
   assert.equal(isManagerRole("staff"), false);
   assert.deepEqual(staffAllowedReportTypes(), ["Staff Work Report"]);
   assert.deepEqual(reportTypesForRole("admin"), REPORT_TYPES);
   assert.deepEqual(reportTypesForRole("staff"), ["Staff Work Report"]);
+});
+
+test("normalises rich Apps Script report type objects and legacy strings", () => {
+  const rich = normalizeReportTypeOption(LIVE_REPORT_TYPES[2]);
+  assert.equal(rich.report_type, "Client Job Report");
+  assert.deepEqual(rich.group_by, ["customer", "project", "job_sheet_id"]);
+  assert.equal(rich.default_group_by, "customer");
+  assert.equal(rich.label, "Client Job Report");
+
+  const legacy = normalizeReportTypeOption("Staff Work Report");
+  assert.equal(legacy.report_type, "Staff Work Report");
+  assert.deepEqual(legacy.group_by, ["staff_id", "job_sheet_id"]);
+  assert.equal(legacy.default_group_by, "staff_id");
+
+  const empty = normalizeReportTypeOption({
+    report_type: "Experimental",
+    allowed_group_by: [],
+    group_by: [],
+  });
+  assert.equal(empty.report_type, "Experimental");
+  assert.deepEqual(empty.group_by, []);
+  assert.equal(empty.default_group_by, "");
+
+  const allFive = normalizeReportTypeOptions(LIVE_REPORT_TYPES);
+  assert.equal(allFive.length, 5);
+  assert.deepEqual(
+    allFive.map((opt) => opt.report_type),
+    REPORT_TYPES
+  );
+  assert.ok(allFive.every((opt) => Array.isArray(opt.group_by)));
+});
+
+test("group_by choices and labels drive the select UI", () => {
+  const options = reportTypeOptionsForRole("manager", LIVE_REPORT_TYPES);
+  assert.deepEqual(groupByChoicesForReportType(options, "Completion Register"), [
+    "job_month",
+    "customer",
+    "project",
+    "none",
+  ]);
+  assert.equal(defaultGroupByForReportType(options, "Staff Work Report"), "staff_id");
+  assert.equal(reportTypeLabel(options[0]), "Job Sheet Summary");
+  assert.equal(reportTypeLabel({ report_type: "X", label: "Friendly" }), "Friendly");
+
+  const selects = reportTypeSelectOptions(LIVE_REPORT_TYPES);
+  assert.deepEqual(
+    selects.map((row) => row.value),
+    REPORT_TYPES
+  );
+  assert.deepEqual(
+    selects.map((row) => row.label),
+    REPORT_TYPES
+  );
 });
 
 test("default range is 30 inclusive days", () => {
@@ -48,11 +136,12 @@ test("query helpers preserve filters and job deep-links", () => {
   assert.match(deep, /^\/reports\?/);
   assert.match(deep, /job_sheet_id=21759f5d/);
   assert.match(deep, /report_type=Job\+Sheet\+Summary/);
-  assert.deepEqual(parseReportsSearch("?job_sheet_id=21759f5d&report_type=Staff%20Work%20Report"), {
+  assert.deepEqual(parseReportsSearch("?job_sheet_id=21759f5d&report_type=Staff%20Work%20Report&group_by=staff_id"), {
     report_type: "Staff Work Report",
     job_sheet_id: "21759f5d",
     date_from: "",
     date_to: "",
+    group_by: "staff_id",
   });
   assert.equal(jobSummaryPdfPath("21759f5d"), "/jobs/21759f5d/summary.pdf");
   assert.equal(jobSummaryPdfPath(""), "");
@@ -67,12 +156,14 @@ test("preview body drops blanks and supports job filter", () => {
     project: "",
     job_sheet_id: "21759f5d",
     billable: "true",
+    group_by: "customer",
   });
   assert.equal(body.report_type, "Client Job Report");
   assert.deepEqual(body.job_sheet_ids, ["21759f5d"]);
   assert.equal(body.filters.customer, "Dykes");
   assert.equal(body.filters.billable, true);
   assert.equal(body.filters.project, undefined);
+  assert.equal(body.group_by, "customer");
 });
 
 test("batch action gates and generate confirmation", () => {
@@ -117,8 +208,9 @@ test("routes and navigation wire reports for manager and staff", () => {
   assert.match(page, /useSearchParams/);
   assert.match(page, /emptyPreviewMessage/);
   assert.match(page, /window\.confirm/);
-  assert.ok(!page.includes('method: "POST"') || page.includes("runPreview") || page.includes("/reports/preview"));
-  // Auto path must not create batches on filter change — only explicit actions.
+  assert.match(page, /reportTypeSelectOptions|typeSelectOptions/);
+  assert.match(page, /groupByChoices/);
+  assert.match(page, /Group by/);
   assert.match(emptyPreviewMessage(), /never created automatically|PDFs are never created automatically/i);
-  assert.match(page, /reportTypesForRole/);
+  assert.match(page, /reportTypeOptionsForRole/);
 });

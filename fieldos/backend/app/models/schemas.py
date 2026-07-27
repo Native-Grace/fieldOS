@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class ErrorBody(BaseModel):
@@ -1033,15 +1033,68 @@ class ReportFilters(BaseModel):
     q: Optional[str] = None
 
 
+class ReportTypeOption(BaseModel):
+    """One selectable report template — matches live Apps Script get_report_options."""
+
+    report_type: str
+    group_by: List[str] = Field(default_factory=list)
+    allowed_group_by: List[str] = Field(default_factory=list)
+    default_group_by: str = ""
+    label: Optional[str] = None
+    description: Optional[str] = None
+    supports_landscape: Optional[bool] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_string_or_as_object(cls, value: Any) -> Any:
+        # Local import avoids circular imports at module load.
+        from app.services.report_math import normalise_report_type_option
+
+        return normalise_report_type_option(value)
+
+    @model_validator(mode="after")
+    def _fill_label_and_group_alias(self) -> "ReportTypeOption":
+        if not self.label:
+            self.label = self.report_type
+        # Keep group_by as the UI-facing alias of allowed_group_by.
+        if not self.group_by and self.allowed_group_by:
+            self.group_by = list(self.allowed_group_by)
+        elif self.group_by and not self.allowed_group_by:
+            self.allowed_group_by = list(self.group_by)
+        if not self.default_group_by and self.group_by:
+            self.default_group_by = self.group_by[0]
+        return self
+
+
 class ReportOptionsResponse(BaseModel):
-    report_types: List[str] = Field(default_factory=list)
+    report_types: List[ReportTypeOption] = Field(default_factory=list)
     statuses: List[str] = Field(default_factory=list)
+    report_statuses: List[str] = Field(default_factory=list)
     template_version: str = ""
+    max_records: Optional[int] = None
+    filter_keys: List[str] = Field(default_factory=list)
+    scoped_to_staff_id: str = ""
+    actor_role: str = ""
     default_filters: Dict[str, Any] = Field(default_factory=dict)
     landscape_defaults: Dict[str, bool] = Field(default_factory=dict)
     audiences: Dict[str, str] = Field(default_factory=dict)
     data_mode: str
-    assumptions: List[str]
+    assumptions: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _align_apps_script_and_mock_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        # Live Apps Script uses report_statuses; mock historically used statuses.
+        statuses = data.get("statuses")
+        report_statuses = data.get("report_statuses")
+        if not statuses and isinstance(report_statuses, list):
+            data["statuses"] = list(report_statuses)
+        if not report_statuses and isinstance(statuses, list):
+            data["report_statuses"] = list(statuses)
+        return data
 
 
 class ReportTotals(BaseModel):
@@ -1068,6 +1121,7 @@ class ReportPreviewRequest(BaseModel):
     date_to: Optional[str] = None
     filters: Optional[ReportFilters] = None
     job_sheet_ids: Optional[List[str]] = None
+    group_by: Optional[str] = None
 
 
 class ReportPreviewResponse(BaseModel):
@@ -1077,6 +1131,7 @@ class ReportPreviewResponse(BaseModel):
     job_count: int = 0
     group_count: int = 0
     page_estimate: int = 0
+    group_by: str = ""
     totals: ReportTotals
     blockers: List[str] = Field(default_factory=list)
     items: List[ReportPreviewItem] = Field(default_factory=list)
