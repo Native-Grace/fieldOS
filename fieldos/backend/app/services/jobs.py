@@ -22,6 +22,9 @@ from app.services.recording_files import (
 from app.services.report_math import (
     REPORT_JOB_SHEET_SUMMARY,
     TEMPLATE_VERSION,
+    ReportSnapshotError,
+    normalise_report_pdf_snapshot,
+    prepare_report_snapshot_for_render,
     safe_report_filename,
     sha256_hex,
     validate_pdf_bytes,
@@ -344,35 +347,116 @@ class JobService:
 
     def _render_pdf(self, data: dict[str, Any], *, report_type: str = "") -> dict[str, Any]:
         """Render + validate a PDF from returned report data. Never returns invalid bytes."""
-        resolved_type = str(data.get("report_type") or report_type)
-        snapshot = data.get("snapshot")
-        if not isinstance(snapshot, dict) or not snapshot:
-            raise HTTPException(status_code=422, detail="Report snapshot is missing or empty.")
-        meta = dict(data.get("meta") or {})
+        try:
+            normalised = normalise_report_pdf_snapshot(data)
+        except ReportSnapshotError as exc:
+            log_extra(
+                logger,
+                30,
+                "Report PDF snapshot rejected",
+                report_batch_id=str(data.get("report_batch_id") or ""),
+                batch_status=str((data.get("batch") or {}).get("status") or ""),
+                snapshot_field="",
+                snapshot_type="",
+                snapshot_present=False,
+                included_record_count=0,
+                renderer_outcome="rejected",
+                detail=str(exc),
+            )
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        resolved_type = str(normalised.get("report_type") or report_type or "")
+        frozen = normalised["snapshot"]
+        prepared = prepare_report_snapshot_for_render(frozen, report_type=resolved_type)
+        if not resolved_type:
+            resolved_type = str(prepared.get("report_type") or report_type or "")
+        meta = dict(normalised.get("meta") or data.get("meta") or {})
         meta.setdefault("report_type", resolved_type)
         meta.setdefault("report_title", resolved_type)
-        meta.setdefault("template_version", str(data.get("template_version") or TEMPLATE_VERSION))
+        meta.setdefault(
+            "template_version",
+            str(normalised.get("template_version") or data.get("template_version") or TEMPLATE_VERSION),
+        )
+
+        report_batch_id = str(
+            normalised.get("report_batch_id")
+            or data.get("report_batch_id")
+            or (normalised.get("batch") or {}).get("report_batch_id")
+            or ""
+        )
+        log_extra(
+            logger,
+            20,
+            "Report PDF snapshot ready",
+            report_batch_id=report_batch_id,
+            batch_status=str(normalised.get("batch_status") or ""),
+            snapshot_field=str(normalised.get("snapshot_field") or ""),
+            snapshot_type=str(normalised.get("snapshot_type") or ""),
+            snapshot_present=bool(normalised.get("snapshot_present")),
+            included_record_count=int(normalised.get("included_record_count") or 0),
+            renderer_outcome="pending",
+        )
+
         try:
-            pdf = render_report(resolved_type, snapshot, meta)
+            pdf = render_report(resolved_type, prepared, meta)
         except ValueError as exc:
+            log_extra(
+                logger,
+                30,
+                "Report PDF render failed",
+                report_batch_id=report_batch_id,
+                batch_status=str(normalised.get("batch_status") or ""),
+                snapshot_field=str(normalised.get("snapshot_field") or ""),
+                snapshot_type=str(normalised.get("snapshot_type") or ""),
+                snapshot_present=True,
+                included_record_count=int(normalised.get("included_record_count") or 0),
+                renderer_outcome="render_error",
+            )
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
             byte_size = validate_pdf_bytes(pdf)
         except ValueError as exc:
+            log_extra(
+                logger,
+                40,
+                "Report PDF validation failed",
+                report_batch_id=report_batch_id,
+                batch_status=str(normalised.get("batch_status") or ""),
+                snapshot_field=str(normalised.get("snapshot_field") or ""),
+                snapshot_type=str(normalised.get("snapshot_type") or ""),
+                snapshot_present=True,
+                included_record_count=int(normalised.get("included_record_count") or 0),
+                renderer_outcome="invalid_pdf",
+            )
             raise HTTPException(
                 status_code=500, detail=f"Report PDF failed validation: {exc}"
             ) from exc
         checksum = sha256_hex(pdf)
-        stored = str(data.get("checksum") or "")
+        stored = str(normalised.get("checksum") or data.get("checksum") or "")
         if stored and stored != checksum:
             log_extra(
                 logger,
                 30,
                 "Report checksum drift between generate and download",
                 report_type=resolved_type,
+                report_batch_id=report_batch_id,
                 stored_checksum=stored,
                 rendered_checksum=checksum,
             )
+        log_extra(
+            logger,
+            20,
+            "Report PDF rendered",
+            report_batch_id=report_batch_id,
+            batch_status=str(normalised.get("batch_status") or ""),
+            snapshot_field=str(normalised.get("snapshot_field") or ""),
+            snapshot_type=str(normalised.get("snapshot_type") or ""),
+            snapshot_present=True,
+            included_record_count=int(normalised.get("included_record_count") or 0),
+            renderer_outcome="ok",
+            report_type=resolved_type,
+            byte_size=byte_size,
+        )
         return {
             "pdf_bytes": pdf,
             "byte_size": byte_size,
@@ -380,7 +464,11 @@ class JobService:
             "stored_checksum": stored,
             "report_type": resolved_type,
             "content_type": "application/pdf",
-            "file_name": str(data.get("file_name") or safe_report_filename(resolved_type)),
+            "file_name": str(
+                normalised.get("file_name")
+                or data.get("file_name")
+                or safe_report_filename(resolved_type)
+            ),
         }
 
     async def report_pdf(
@@ -398,17 +486,9 @@ class JobService:
             actor_identity=actor_identity,
             body={"report_batch_id": report_batch_id},
         )
+        if isinstance(data, dict) and not data.get("report_batch_id"):
+            data = {**data, "report_batch_id": report_batch_id}
         rendered = self._render_pdf(data)
-        log_extra(
-            logger,
-            20,
-            "Report PDF rendered",
-            report_batch_id=report_batch_id,
-            report_type=rendered["report_type"],
-            byte_size=rendered["byte_size"],
-            staff_id=staff_id,
-            actor_role=actor_role,
-        )
         return rendered
 
     async def job_summary_pdf(
@@ -427,15 +507,6 @@ class JobService:
         )
         rendered = self._render_pdf(data, report_type=REPORT_JOB_SHEET_SUMMARY)
         rendered.setdefault("job_sheet_id", job_sheet_id)
-        log_extra(
-            logger,
-            20,
-            "Job summary PDF rendered",
-            job_sheet_id=job_sheet_id,
-            byte_size=rendered["byte_size"],
-            staff_id=staff_id,
-            actor_role=actor_role,
-        )
         return rendered
 
     async def rates_action(

@@ -714,7 +714,12 @@ class MockReportsMixin:
                     "checksum": batch.get("checksum") or "",
                 }
             )
+            assembled = self._assemble_report_batch(batch)
             return {
+                "batch": assembled["report_batch"],
+                "snapshot": snapshot,
+                "items": assembled["items"],
+                # Legacy flat aliases kept for older callers / diagnostics.
                 "report_batch_id": batch_id,
                 "report_type": report_type,
                 "template_version": str(batch.get("template_version") or TEMPLATE_VERSION),
@@ -722,7 +727,6 @@ class MockReportsMixin:
                 "content_type": "application/pdf",
                 "checksum": str(batch.get("checksum") or ""),
                 "audience": REPORT_AUDIENCE.get(report_type, "internal"),
-                "snapshot": snapshot,
                 "meta": self._snapshot_meta(batch),
             }
 

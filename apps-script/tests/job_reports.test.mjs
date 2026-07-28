@@ -878,13 +878,19 @@ test("frozen batch data can be read back only after generation", () => {
   const frozen = ctx.FieldOSJobReports.getReportBatchPdfData({ ...MANAGER, report_batch_id: batchId });
   assert.equal(frozen.data.report_batch_id, batchId);
   assert.equal(frozen.data.template_version, "3F.1");
+  assert.ok(frozen.data.batch);
+  assert.equal(frozen.data.batch.report_batch_id, batchId);
+  assert.equal(frozen.data.batch.status, "Generated");
+  assert.ok(Array.isArray(frozen.data.items));
+  assert.equal(frozen.data.snapshot.jobs.length, 2);
+  assert.equal(frozen.data.snapshot.omitted_job_data, false);
   assert.equal(frozen.data.report_data.jobs.length, 2);
-  assert.equal(frozen.data.report_data.omitted_job_data, false);
   assert.ok(frozen.data.checksum);
   const json = JSON.stringify(frozen);
   assert.ok(!json.includes(TRANSCRIPT_SECRET));
   assert.ok(!json.includes(DRIVE_SECRET));
   assert.ok(!/pdf_base64|pdf_bytes/i.test(json));
+  assert.ok(!/"snapshot_json"\s*:/.test(json));
 
   // Staff cannot read a manager-scoped batch.
   assert.throws(

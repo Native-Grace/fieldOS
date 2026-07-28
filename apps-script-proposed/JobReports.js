@@ -1276,6 +1276,8 @@ var FieldOSJobReports = {
     if (!snapshot) {
       throw new Error("Validation Error: report snapshot missing.");
     }
+    var assembled = this._assembleBatch(header);
+    var scrubbedSnapshot = fieldosScrubReportRecord_(snapshot);
 
     this._writeAudit({
       action: "download_report_batch",
@@ -1298,6 +1300,10 @@ var FieldOSJobReports = {
       action: "get_report_batch_pdf_data",
       message: "OK",
       data: {
+        batch: assembled.report_batch,
+        snapshot: scrubbedSnapshot,
+        items: assembled.items || [],
+        // Legacy flat aliases — FastAPI normalises these when snapshot is absent.
         report_batch_id: String(header.report_batch_id || ""),
         report_type: String(header.report_type || ""),
         template_version: String(header.template_version || FIELDOS_REPORT_TEMPLATE_VERSION_),
@@ -1305,7 +1311,7 @@ var FieldOSJobReports = {
         checksum: String(header.checksum || ""),
         record_count: Number(header.record_count) || 0,
         estimated_pages: Number(header.estimated_pages) || 0,
-        report_data: fieldosScrubReportRecord_(snapshot)
+        report_data: scrubbedSnapshot
       }
     };
   },
@@ -1396,6 +1402,8 @@ var FieldOSJobReports = {
         template_version: FIELDOS_REPORT_TEMPLATE_VERSION_,
         file_name: fileName,
         generated_at: generatedAt,
+        snapshot: pdfData,
+        // Legacy alias used by older FastAPI parsers.
         pdf_data: pdfData
       }
     };

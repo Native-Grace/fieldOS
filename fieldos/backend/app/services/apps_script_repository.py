@@ -329,7 +329,15 @@ class AppsScriptJobRepository:
         except AppsScriptError as exc:
             _raise_from_rates_apps(exc)
             raise
-        return result.get("data") if isinstance(result.get("data"), dict) else {}
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        # PDF download needs the Success envelope so nested/legacy snapshot aliases
+        # (report_data, snapshot_json) still normalise. Other report actions keep
+        # the unwrapped data block expected by route assemblers.
+        if action == "get_report_batch_pdf_data" and isinstance(result, dict) and isinstance(
+            result.get("data"), dict
+        ):
+            return result
+        return data
 
     async def aget_job_pdf_data(
         self, job_sheet_id: str, staff_id: str, actor_role: str, *, actor_identity: str = ""
@@ -347,8 +355,13 @@ class AppsScriptJobRepository:
         except AppsScriptError as exc:
             _raise_from_apps(exc)
             raise
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        if not isinstance(data.get("snapshot"), dict):
+        # Return the full Success envelope so pdf_data / snapshot aliases normalise.
+        if isinstance(result, dict) and (
+            result.get("data") is not None or result.get("snapshot") is not None
+        ):
+            return result
+        data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+        if not isinstance(data, dict) or not data:
             raise HTTPException(status_code=502, detail="Apps Script returned no report snapshot.")
         return data
 

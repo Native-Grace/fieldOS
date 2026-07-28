@@ -7,6 +7,7 @@ JobReportHelpers contract so report content is identical in both data modes.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -621,6 +622,417 @@ def validate_pdf_bytes(data: Any, *, max_bytes: int = MAX_REPORT_PDF_BYTES) -> i
     if len(data) > max_bytes:
         raise ValueError(f"Report PDF exceeds the {max_bytes} byte limit.")
     return len(data)
+
+
+# Snapshot field aliases seen across Apps Script, mock, and older payloads.
+_SNAPSHOT_FIELD_CANDIDATES = (
+    "snapshot",
+    "report_data",
+    "snapshot_json",
+    "report_snapshot_json",
+    "pdf_data",
+    "report_snapshot",
+)
+
+
+class ReportSnapshotError(ValueError):
+    """Structured failure while extracting a frozen report snapshot for PDF render."""
+
+
+def _parse_snapshot_candidate(raw: Any) -> tuple[Any, str]:
+    """Return (parsed_value, type_label). Raises ReportSnapshotError on invalid JSON."""
+    if raw is None:
+        raise ReportSnapshotError("Report snapshot is missing or empty.")
+    if isinstance(raw, (dict, list)):
+        return raw, "list" if isinstance(raw, list) else "dict"
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            raise ReportSnapshotError("Report snapshot is missing or empty.")
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ReportSnapshotError("Report snapshot JSON is invalid.") from exc
+        if isinstance(parsed, dict):
+            return parsed, "json_string"
+        if isinstance(parsed, list):
+            return parsed, "json_string"
+        raise ReportSnapshotError("Report snapshot is missing or empty.")
+    raise ReportSnapshotError("Report snapshot is missing or empty.")
+
+
+def _unwrap_report_container(value: Any) -> Any:
+    """Accept {report: ...} wrappers without discarding the inner payload."""
+    if not isinstance(value, dict):
+        return value
+    if "report" in value and len(value) == 1:
+        return value.get("report")
+    inner = value.get("report")
+    if isinstance(inner, (dict, list)) and not any(
+        key in value for key in ("jobs", "bundles", "job", "groups", "record_count", "job_count")
+    ):
+        return inner
+    return value
+
+
+def _extract_raw_snapshot(result: Any) -> tuple[Any, str, Any]:
+    """Locate the first non-empty snapshot candidate.
+
+    Returns (raw_value, field_name, container_dict_used_for_metadata).
+    """
+    if result is None:
+        raise ReportSnapshotError("Report snapshot is missing or empty.")
+
+    # Bare snapshot payloads (dict/list/JSON string).
+    if isinstance(result, list) or (
+        isinstance(result, dict)
+        and not any(
+            key in result
+            for key in (
+                "data",
+                "batch",
+                "items",
+                "report_batch",
+                *_SNAPSHOT_FIELD_CANDIDATES,
+            )
+        )
+        and any(key in result for key in ("jobs", "bundles", "job", "groups", "report_type"))
+    ):
+        return result, "snapshot", result if isinstance(result, dict) else {}
+
+    if isinstance(result, str):
+        return result, "snapshot", {}
+
+    if not isinstance(result, dict):
+        raise ReportSnapshotError("Report snapshot is missing or empty.")
+
+    containers: list[tuple[str, dict[str, Any]]] = [("", result)]
+    data = result.get("data")
+    if isinstance(data, dict):
+        containers.append(("data", data))
+
+    for _label, container in containers:
+        for field in _SNAPSHOT_FIELD_CANDIDATES:
+            if field not in container:
+                continue
+            raw = container.get(field)
+            if raw is None:
+                continue
+            if isinstance(raw, str) and not raw.strip():
+                continue
+            if isinstance(raw, (dict, list)) and not raw:
+                continue
+            return raw, field, container
+
+        # Nested aliases under data already covered; also accept batch.snapshot*.
+        batch = container.get("batch") or container.get("report_batch")
+        if isinstance(batch, dict):
+            for field in _SNAPSHOT_FIELD_CANDIDATES:
+                if field not in batch:
+                    continue
+                raw = batch.get(field)
+                if raw is None or (isinstance(raw, str) and not raw.strip()):
+                    continue
+                if isinstance(raw, (dict, list)) and not raw:
+                    continue
+                return raw, f"batch.{field}", container
+
+    raise ReportSnapshotError("Report snapshot is missing or empty.")
+
+
+def snapshot_included_record_count(snapshot: Any) -> int:
+    """Count jobs/bundles included in a frozen snapshot (never live-filter)."""
+    if isinstance(snapshot, list):
+        return len(snapshot)
+    if not isinstance(snapshot, dict):
+        return 0
+    for key in ("jobs", "bundles"):
+        rows = snapshot.get(key)
+        if isinstance(rows, list):
+            return len(rows)
+    if isinstance(snapshot.get("job_index"), list) and snapshot.get("omitted_job_data"):
+        return len(snapshot["job_index"])
+    if snapshot.get("job"):
+        return 1
+    for key in ("record_count", "job_count"):
+        try:
+            count = int(snapshot.get(key) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            return count
+    return 0
+
+
+def _adapt_task_lines(rows: Any) -> list[dict[str, Any]]:
+    adapted: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if "source" in row or "text" in row:
+            adapted.append(
+                {
+                    "source": str(row.get("source") or row.get("category") or row.get("source_type") or ""),
+                    "text": str(row.get("text") or row.get("description") or ""),
+                }
+            )
+            continue
+        adapted.append(
+            {
+                "source": str(row.get("category") or row.get("source_type") or ""),
+                "text": str(row.get("description") or ""),
+            }
+        )
+    return adapted
+
+
+def _adapt_totals(totals: Any) -> dict[str, Any]:
+    src = dict(totals or {}) if isinstance(totals, dict) else {}
+    out = dict(src)
+    aliases = (
+        ("labour_hours", ("labour_hours", "total_labour_hours")),
+        ("travel_hours", ("travel_hours", "total_travel_hours")),
+        ("machinery_hours", ("machinery_hours", "total_machinery_hours")),
+        ("billable_labour_hours", ("billable_labour_hours",)),
+        ("material_items", ("material_items", "material_row_count")),
+        ("job_count", ("job_count", "record_count")),
+    )
+    for dest, keys in aliases:
+        if dest in out and out[dest] not in (None, ""):
+            continue
+        for key in keys:
+            if key in src and src[key] not in (None, ""):
+                out[dest] = src[key]
+                break
+    return out
+
+
+def adapt_frozen_job_bundle(job_or_bundle: dict[str, Any] | None) -> dict[str, Any]:
+    """Map Apps Script fieldosBuildJobPdfData_ rows onto the PDF renderer bundle shape."""
+    src = dict(job_or_bundle or {})
+    completion = dict(src.get("completion") or {})
+    if src.get("internal_notes") and not completion.get("internal_notes"):
+        completion["internal_notes"] = src.get("internal_notes")
+    labour = src.get("labour_entries")
+    if labour is None:
+        labour = src.get("labour") or []
+    machinery = src.get("machinery_entries")
+    if machinery is None:
+        machinery = src.get("machinery") or []
+    materials = src.get("material_entries")
+    if materials is None:
+        materials = src.get("materials") or []
+    tasks = src.get("task_lines")
+    if tasks is None:
+        tasks = src.get("tasks") or []
+    return {
+        "job": dict(src.get("job") or {}),
+        "completion": completion,
+        "labour_entries": list(labour or []),
+        "machinery_entries": list(machinery or []),
+        "material_entries": list(materials or []),
+        "task_lines": _adapt_task_lines(tasks),
+        "totals": _adapt_totals(src.get("totals") or {}),
+    }
+
+
+def prepare_report_snapshot_for_render(
+    snapshot: dict[str, Any] | list[Any],
+    *,
+    report_type: str = "",
+) -> dict[str, Any]:
+    """Adapt a frozen snapshot for ReportLab without re-running live filters.
+
+    Apps Script freezes `jobs` + summary `groups`; the mock freezes renderer-ready
+    `bundles` / `groups`. Both shapes are accepted here.
+    """
+    if isinstance(snapshot, list):
+        bundles = [adapt_frozen_job_bundle(row) for row in snapshot if isinstance(row, dict)]
+        resolved_type = report_type or REPORT_JOB_SHEET_SUMMARY
+        out: dict[str, Any] = {
+            "report_type": resolved_type,
+            "template_version": TEMPLATE_VERSION,
+            "jobs": bundles,
+            "bundles": bundles,
+            "record_count": len(bundles),
+            "job_count": len(bundles),
+            "groups": group_bundles(bundles, resolved_type) if resolved_type != REPORT_JOB_SHEET_SUMMARY else [],
+            "totals": _adapt_totals(sum_totals([b.get("totals") or {} for b in bundles])),
+        }
+        if len(bundles) == 1:
+            out.update(bundles[0])
+        return out
+
+    snap = dict(snapshot or {})
+    resolved_type = str(report_type or snap.get("report_type") or "")
+    raw_rows = snap.get("bundles")
+    if not isinstance(raw_rows, list):
+        raw_rows = snap.get("jobs")
+    bundles: list[dict[str, Any]] = []
+    if isinstance(raw_rows, list):
+        bundles = [adapt_frozen_job_bundle(row) for row in raw_rows if isinstance(row, dict)]
+    elif snap.get("job"):
+        bundles = [adapt_frozen_job_bundle(snap)]
+
+    out = dict(snap)
+    out["totals"] = _adapt_totals(snap.get("totals") or {})
+    if bundles:
+        out["bundles"] = bundles
+        out["jobs"] = bundles
+        out.setdefault("record_count", len(bundles))
+        out.setdefault("job_count", len(bundles))
+
+    groups = out.get("groups") if isinstance(out.get("groups"), list) else []
+    needs_rebuild = False
+    if resolved_type and resolved_type != REPORT_JOB_SHEET_SUMMARY:
+        if not groups:
+            needs_rebuild = True
+        else:
+            sample = groups[0] if isinstance(groups[0], dict) else {}
+            has_rows = bool(sample.get("rows"))
+            has_bundles = bool(sample.get("bundles"))
+            # Apps Script summary groups only carry labels / job_sheet_ids.
+            if not has_rows and not has_bundles:
+                needs_rebuild = True
+            elif has_bundles:
+                rebuilt = []
+                for group in groups:
+                    if not isinstance(group, dict):
+                        continue
+                    g = dict(group)
+                    g["label"] = g.get("label") or g.get("group_label") or g.get("key") or g.get("group_key")
+                    g["key"] = g.get("key") or g.get("group_key") or g.get("label") or ""
+                    g["bundles"] = [
+                        adapt_frozen_job_bundle(b) for b in (g.get("bundles") or []) if isinstance(b, dict)
+                    ]
+                    g["totals"] = _adapt_totals(g.get("totals") or sum_totals([b.get("totals") or {} for b in g["bundles"]]))
+                    rebuilt.append(g)
+                groups = rebuilt
+    if needs_rebuild and bundles and resolved_type:
+        groups = group_bundles(bundles, resolved_type)
+    elif groups:
+        # Normalise label/key aliases for already-ready mock groups.
+        normalised_groups = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            g = dict(group)
+            g["label"] = g.get("label") or g.get("group_label") or g.get("key") or g.get("group_key")
+            g["key"] = g.get("key") or g.get("group_key") or g.get("label") or ""
+            normalised_groups.append(g)
+        groups = normalised_groups
+
+    if resolved_type != REPORT_JOB_SHEET_SUMMARY:
+        out["groups"] = groups
+    if resolved_type == REPORT_JOB_SHEET_SUMMARY and len(bundles) == 1:
+        for key, value in bundles[0].items():
+            out.setdefault(key, value)
+    if resolved_type:
+        out["report_type"] = resolved_type
+    return out
+
+
+def normalise_report_pdf_snapshot(result: Any) -> dict[str, Any]:
+    """Canonicalise get_report_batch_pdf_data / get_job_pdf_data payloads.
+
+    Accepts nested Apps Script envelopes, JSON strings, legacy aliases
+    (`report_data`, `snapshot_json`, `pdf_data`), and mock `{snapshot: ...}`.
+    Rejects null, blank, {}, [], invalid JSON, and zero included records.
+    """
+    raw, field, container = _extract_raw_snapshot(result)
+    parsed, snapshot_type = _parse_snapshot_candidate(raw)
+    parsed = _unwrap_report_container(parsed)
+
+    if parsed is None:
+        raise ReportSnapshotError("Report snapshot is missing or empty.")
+    if isinstance(parsed, dict) and not parsed:
+        raise ReportSnapshotError("Report snapshot is missing or empty.")
+    if isinstance(parsed, list) and not parsed:
+        raise ReportSnapshotError("Report snapshot is missing or empty.")
+    if not isinstance(parsed, (dict, list)):
+        raise ReportSnapshotError("Report snapshot is missing or empty.")
+
+    included = snapshot_included_record_count(parsed)
+    if included <= 0:
+        raise ReportSnapshotError("Report snapshot has no included records.")
+
+    batch: dict[str, Any] = {}
+    items: list[dict[str, Any]] = []
+    if isinstance(result, dict):
+        for key in ("batch", "report_batch"):
+            candidate = result.get(key)
+            if isinstance(candidate, dict) and candidate:
+                batch = dict(candidate)
+                break
+        if not batch and isinstance(result.get("data"), dict):
+            nested = result["data"]
+            for key in ("batch", "report_batch"):
+                candidate = nested.get(key)
+                if isinstance(candidate, dict) and candidate:
+                    batch = dict(candidate)
+                    break
+        for source in (result, result.get("data") if isinstance(result.get("data"), dict) else {}):
+            if isinstance(source, dict) and isinstance(source.get("items"), list):
+                items = [row for row in source["items"] if isinstance(row, dict)]
+                if items:
+                    break
+
+    report_type = ""
+    if isinstance(parsed, dict):
+        report_type = str(parsed.get("report_type") or "")
+    report_type = str(
+        report_type
+        or batch.get("report_type")
+        or (container.get("report_type") if isinstance(container, dict) else "")
+        or ""
+    )
+
+    meta: dict[str, Any] = {}
+    if isinstance(container, dict) and isinstance(container.get("meta"), dict):
+        meta = dict(container["meta"])
+    elif isinstance(result, dict) and isinstance(result.get("meta"), dict):
+        meta = dict(result["meta"])
+    if batch:
+        meta.setdefault("report_type", str(batch.get("report_type") or report_type))
+        meta.setdefault("report_title", str(batch.get("report_type") or report_type))
+        meta.setdefault("template_version", str(batch.get("template_version") or TEMPLATE_VERSION))
+        meta.setdefault("internal_ref", str(batch.get("report_batch_id") or ""))
+        meta.setdefault("generated_at", str(batch.get("completed_at") or batch.get("created_at") or ""))
+        meta.setdefault("generated_by", str(batch.get("generated_by") or batch.get("created_by") or ""))
+        if batch.get("landscape") is not None:
+            meta.setdefault("landscape", batch.get("landscape"))
+
+    file_name = ""
+    checksum = ""
+    template_version = TEMPLATE_VERSION
+    report_batch_id = ""
+    if isinstance(container, dict):
+        file_name = str(container.get("file_name") or "")
+        checksum = str(container.get("checksum") or "")
+        template_version = str(container.get("template_version") or template_version)
+        report_batch_id = str(container.get("report_batch_id") or "")
+    if batch:
+        file_name = file_name or str(batch.get("file_name") or "")
+        checksum = checksum or str(batch.get("checksum") or "")
+        template_version = str(batch.get("template_version") or template_version)
+        report_batch_id = report_batch_id or str(batch.get("report_batch_id") or "")
+
+    return {
+        "batch": batch,
+        "snapshot": parsed,
+        "items": items,
+        "snapshot_field": field,
+        "snapshot_type": snapshot_type,
+        "snapshot_present": True,
+        "included_record_count": included,
+        "report_type": report_type,
+        "template_version": template_version,
+        "file_name": file_name,
+        "checksum": checksum,
+        "report_batch_id": report_batch_id,
+        "meta": meta,
+        "batch_status": str(batch.get("status") or ""),
+    }
 
 
 def report_readiness(bundle: dict[str, Any], report_type: str) -> list[str]:

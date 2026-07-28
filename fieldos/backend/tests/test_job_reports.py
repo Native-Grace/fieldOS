@@ -21,7 +21,10 @@ from app.services.report_math import (
     REPORT_STAFF_WORK_REPORT,
     REPORT_TYPES,
     TEMPLATE_VERSION,
+    ReportSnapshotError,
     extract_task_lines,
+    normalise_report_pdf_snapshot,
+    prepare_report_snapshot_for_render,
     safe_report_filename,
     scrub_report_record,
     sha256_hex,
@@ -823,3 +826,253 @@ def test_multi_page_job_summary(client: TestClient) -> None:
 )
 def test_minimum_charge_appears_on_report() -> None:
     raise AssertionError("Not applicable to Phase 3F reporting.")
+
+
+def _one_job_snapshot() -> dict[str, Any]:
+    return {
+        "report_type": REPORT_JOB_SHEET_SUMMARY,
+        "template_version": TEMPLATE_VERSION,
+        "record_count": 1,
+        "jobs": [
+            {
+                "job": {
+                    "job_sheet_id": "21759f5d",
+                    "job_date": "2026-07-16",
+                    "customer_name": "Kat and James Dykes",
+                    "project_name": "Demo",
+                    "approval_status": "Approved",
+                },
+                "completion": {
+                    "completion_id": "CMP-288481F1",
+                    "completion_status": "Finalised",
+                    "work_summary": "Planted seven trees",
+                },
+                "labour": [
+                    {
+                        "staff_id": "STAFF-DEMO001",
+                        "staff_name": "Alex Demo",
+                        "work_date": "2026-07-16",
+                        "start_time": "08:00",
+                        "finish_time": "12:00",
+                        "break_minutes": 0,
+                        "labour_hours": 4,
+                        "travel_hours": 0,
+                        "billable": True,
+                        "confirmation_status": "Confirmed",
+                        "role_or_activity": "Planting",
+                    }
+                ],
+                "machinery": [],
+                "materials": [],
+                "tasks": [
+                    {
+                        "description": "Confirm gate access with owner.",
+                        "category": "Manager Review Item",
+                        "source_type": "manager_review_items",
+                    }
+                ],
+                "totals": {"total_labour_hours": 4, "total_travel_hours": 0},
+            }
+        ],
+        "groups": [
+            {
+                "group_key": "21759f5d",
+                "group_label": "21759f5d",
+                "record_count": 1,
+                "job_sheet_ids": ["21759f5d"],
+            }
+        ],
+    }
+
+
+def test_normalise_report_pdf_snapshot_nested_apps_script_report_data() -> None:
+    snap = _one_job_snapshot()
+    envelope = {
+        "status": "Success",
+        "action": "get_report_batch_pdf_data",
+        "message": "OK",
+        "data": {
+            "report_batch_id": "RPT-DDF729D8",
+            "report_type": REPORT_JOB_SHEET_SUMMARY,
+            "template_version": TEMPLATE_VERSION,
+            "file_name": "nativegrace_job_sheet_summary.pdf",
+            "checksum": "abc",
+            "record_count": 1,
+            "report_data": snap,
+        },
+    }
+    normalised = normalise_report_pdf_snapshot(envelope)
+    assert normalised["snapshot_field"] == "report_data"
+    assert normalised["snapshot_type"] == "dict"
+    assert normalised["included_record_count"] == 1
+    assert normalised["snapshot"]["jobs"][0]["job"]["job_sheet_id"] == "21759f5d"
+
+
+def test_normalise_report_pdf_snapshot_json_string_and_legacy_alias() -> None:
+    snap = _one_job_snapshot()
+    as_string = normalise_report_pdf_snapshot({"snapshot_json": json.dumps(snap)})
+    assert as_string["snapshot_field"] == "snapshot_json"
+    assert as_string["snapshot_type"] == "json_string"
+    assert as_string["included_record_count"] == 1
+
+    legacy = normalise_report_pdf_snapshot({"report_snapshot_json": snap})
+    assert legacy["snapshot_field"] == "report_snapshot_json"
+    assert legacy["included_record_count"] == 1
+
+
+def test_normalise_report_pdf_snapshot_parsed_object_and_canonical_batch() -> None:
+    snap = _one_job_snapshot()
+    normalised = normalise_report_pdf_snapshot(
+        {
+            "batch": {"report_batch_id": "RPT-1", "status": "Generated", "report_type": REPORT_JOB_SHEET_SUMMARY},
+            "snapshot": snap,
+            "items": [{"job_sheet_id": "21759f5d"}],
+        }
+    )
+    assert normalised["snapshot_field"] == "snapshot"
+    assert normalised["batch"]["report_batch_id"] == "RPT-1"
+    assert normalised["batch_status"] == "Generated"
+    assert normalised["items"][0]["job_sheet_id"] == "21759f5d"
+
+
+def test_normalise_report_pdf_snapshot_rejects_missing_invalid_empty() -> None:
+    with pytest.raises(ReportSnapshotError, match="missing or empty"):
+        normalise_report_pdf_snapshot({})
+    with pytest.raises(ReportSnapshotError, match="missing or empty"):
+        normalise_report_pdf_snapshot({"data": {"report_data": None}})
+    with pytest.raises(ReportSnapshotError, match="missing or empty"):
+        normalise_report_pdf_snapshot({"snapshot": {}})
+    with pytest.raises(ReportSnapshotError, match="missing or empty"):
+        normalise_report_pdf_snapshot({"snapshot": []})
+    with pytest.raises(ReportSnapshotError, match="invalid"):
+        normalise_report_pdf_snapshot({"snapshot_json": "{not-json"})
+    with pytest.raises(ReportSnapshotError, match="no included records"):
+        normalise_report_pdf_snapshot(
+            {"snapshot": {"report_type": REPORT_JOB_SHEET_SUMMARY, "jobs": [], "record_count": 0}}
+        )
+
+
+def test_prepare_apps_script_jobs_snapshot_for_job_sheet_render() -> None:
+    prepared = prepare_report_snapshot_for_render(
+        _one_job_snapshot(), report_type=REPORT_JOB_SHEET_SUMMARY
+    )
+    assert len(prepared["bundles"]) == 1
+    bundle = prepared["bundles"][0]
+    assert bundle["labour_entries"][0]["staff_id"] == "STAFF-DEMO001"
+    assert bundle["task_lines"][0]["text"] == "Confirm gate access with owner."
+    assert bundle["totals"]["labour_hours"] == 4
+
+
+def test_download_accepts_nested_apps_script_report_data_shape(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.mock_reports import MockReportsMixin
+
+    seed_finalised_job(job_sheet_id="21759f5d", completion_id="CMP-288481F1")
+    headers = _manager_headers(client)
+    batch = run_report_lifecycle(client, headers, REPORT_JOB_SHEET_SUMMARY)
+    snap = _store().get_report_batch(batch["report_batch_id"])["snapshot"]
+    real = MockReportsMixin.areport_action
+
+    async def fake_report_action(self: Any, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        if action != "get_report_batch_pdf_data":
+            return await real(self, action, body)
+        return {
+            "status": "Success",
+            "action": "get_report_batch_pdf_data",
+            "message": "OK",
+            "data": {
+                "report_batch_id": batch["report_batch_id"],
+                "report_type": REPORT_JOB_SHEET_SUMMARY,
+                "template_version": TEMPLATE_VERSION,
+                "file_name": batch["file_name"],
+                "checksum": batch["checksum"],
+                "record_count": 1,
+                "report_data": snap,
+            },
+        }
+
+    monkeypatch.setattr(MockReportsMixin, "areport_action", fake_report_action)
+    download = client.get(f"/api/v1/reports/{batch['report_batch_id']}/download", headers=headers)
+    assert download.status_code == 200, download.text
+    assert download.content.startswith(b"%PDF")
+
+
+def test_download_structured_422_when_snapshot_missing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.mock_reports import MockReportsMixin
+
+    seed_finalised_job(job_sheet_id="21759f5d", completion_id="CMP-288481F1")
+    headers = _manager_headers(client)
+    batch = run_report_lifecycle(client, headers, REPORT_COMPLETION_REGISTER)
+    real = MockReportsMixin.areport_action
+
+    async def empty_pdf_data(self: Any, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        if action != "get_report_batch_pdf_data":
+            return await real(self, action, body)
+        return {
+            "status": "Success",
+            "data": {
+                "report_batch_id": batch["report_batch_id"],
+                "report_type": REPORT_COMPLETION_REGISTER,
+                "report_data": {},
+            },
+        }
+
+    monkeypatch.setattr(MockReportsMixin, "areport_action", empty_pdf_data)
+    download = client.get(f"/api/v1/reports/{batch['report_batch_id']}/download", headers=headers)
+    assert download.status_code == 422
+    assert "missing or empty" in download.json()["detail"].lower()
+
+
+def test_download_structured_422_when_snapshot_json_invalid(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.mock_reports import MockReportsMixin
+
+    seed_finalised_job(job_sheet_id="21759f5d", completion_id="CMP-288481F1")
+    headers = _manager_headers(client)
+    batch = run_report_lifecycle(client, headers, REPORT_COMPLETION_REGISTER)
+    real = MockReportsMixin.areport_action
+
+    async def bad_json(self: Any, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        if action != "get_report_batch_pdf_data":
+            return await real(self, action, body)
+        return {"data": {"snapshot_json": "{broken"}}
+
+    monkeypatch.setattr(MockReportsMixin, "areport_action", bad_json)
+    download = client.get(f"/api/v1/reports/{batch['report_batch_id']}/download", headers=headers)
+    assert download.status_code == 422
+    assert "invalid" in download.json()["detail"].lower()
+
+
+def test_one_record_snapshot_downloads_and_does_not_mutate_batch(client: TestClient) -> None:
+    seed_finalised_job(job_sheet_id="21759f5d", completion_id="CMP-288481F1")
+    headers = _manager_headers(client)
+    batch = run_report_lifecycle(client, headers, REPORT_JOB_SHEET_SUMMARY)
+    assert batch["record_count"] == 1
+    before = _store().get_report_batch(batch["report_batch_id"])
+    assert before is not None
+    before_version = before["version"]
+    before_checksum = before["checksum"]
+    before_snapshot = json.dumps(before["snapshot"], sort_keys=True)
+
+    download = client.get(f"/api/v1/reports/{batch['report_batch_id']}/download", headers=headers)
+    assert download.status_code == 200, download.text
+    assert download.content.startswith(b"%PDF")
+
+    after = _store().get_report_batch(batch["report_batch_id"])
+    assert after is not None
+    assert after["version"] == before_version
+    assert after["checksum"] == before_checksum
+    assert after["status"] == "Generated"
+    assert json.dumps(after["snapshot"], sort_keys=True) == before_snapshot
+
+    blob = json.dumps(after["snapshot"])
+    assert TRANSCRIPT_MARKER not in blob
+    assert DRIVE_MARKER not in blob
+    assert "drive_file_id" not in blob
+    text = pdf_text(download.content)
+    assert TRANSCRIPT_MARKER not in text
+    assert DRIVE_MARKER not in text
