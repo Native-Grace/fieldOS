@@ -345,6 +345,140 @@ class JobService:
         )
         return result
 
+    async def delivery_action(
+        self,
+        action: str,
+        *,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            **body,
+            "staff_id": staff_id,
+            "actor_staff_id": staff_id,
+            "actor_role": actor_role,
+            "actor_identity": actor_identity,
+        }
+        for key in ("pdf_bytes", "pdf_base64", "drive_url", "public_url", "public_link"):
+            payload.pop(key, None)
+        if action != "upload_attachment":
+            for key in ("drive_file_id", "storage_ref", "content_base64"):
+                # drive_file_id may be set only by orchestrator → record_delivery_outcome
+                if action == "record_delivery_outcome" and key == "drive_file_id":
+                    continue
+                payload.pop(key, None)
+
+        mode = (self.settings.data_mode or "mock").strip().lower()
+        from app.services.delivery_orchestrator import ORCHESTRATED_DELIVERY_ACTIONS, DeliveryOrchestrator
+
+        if mode == "apps_script" and action in ORCHESTRATED_DELIVERY_ACTIONS:
+            result = await DeliveryOrchestrator(self.settings, self.repo).execute(action, payload)
+        else:
+            result = await self.repo.adelivery_action(action, payload)
+
+        if action == "delivery_options" and isinstance(result, dict):
+            from app.services.attachment_math import antivirus_boundary_note
+            from app.services.delivery_math import drive_filing_allowed, email_send_allowed
+
+            email_ok, email_reason = email_send_allowed(
+                data_mode=self.settings.data_mode,
+                email_enabled=self.settings.document_email_enabled,
+                fieldos_env=self.settings.fieldos_env,
+            )
+            drive_ok, drive_reason = drive_filing_allowed(
+                data_mode=self.settings.data_mode,
+                drive_enabled=self.settings.document_drive_filing_enabled,
+                fieldos_env=self.settings.fieldos_env,
+            )
+            result = {
+                **result,
+                "email_enabled": bool(email_ok),
+                "drive_filing_enabled": bool(drive_ok),
+                "email_gate_reason": email_reason or result.get("email_gate_reason") or "",
+                "drive_gate_reason": drive_reason or result.get("drive_gate_reason") or "",
+                "antivirus_boundary": result.get("antivirus_boundary") or antivirus_boundary_note(),
+                "auto_send": False,
+            }
+
+        log_extra(
+            logger,
+            20,
+            "Document delivery action",
+            action=action,
+            staff_id=staff_id,
+            actor_role=actor_role,
+            delivery_id=str(body.get("delivery_id") or ""),
+            document_type=str(body.get("document_type") or ""),
+            confirm_send=bool(body.get("confirm_send")),
+            method=str((result.get("delivery") or {}).get("delivery_method") or body.get("delivery_method") or ""),
+            outcome=str((result.get("delivery") or {}).get("status") or ""),
+            checksum_present=bool((result.get("delivery") or {}).get("checksum")),
+            provider_enabled=bool(
+                self.settings.document_email_enabled or self.settings.document_drive_filing_enabled
+            ),
+        )
+        return result
+
+    async def attachment_action(
+        self,
+        action: str,
+        *,
+        staff_id: str,
+        actor_role: str,
+        actor_identity: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            **body,
+            "staff_id": staff_id,
+            "actor_staff_id": staff_id,
+            "actor_role": actor_role,
+            "actor_identity": actor_identity,
+        }
+        if action == "upload_attachment":
+            from app.services.attachment_math import validate_attachment_upload
+            from app.services.attachment_storage import decode_content_base64, store_attachment_bytes
+
+            blockers = validate_attachment_upload(
+                filename=payload.get("file_name"),
+                mime_type=payload.get("mime_type"),
+                byte_size=payload.get("byte_size"),
+                attachment_type=payload.get("attachment_type") or "other",
+                max_bytes=self.settings.max_attachment_bytes,
+            )
+            if blockers:
+                raise HTTPException(status_code=422, detail="; ".join(blockers))
+            raw = decode_content_base64(payload.pop("content_base64", None))
+            if raw is not None:
+                stored = store_attachment_bytes(
+                    self.settings,
+                    job_sheet_id=str(payload.get("job_sheet_id") or ""),
+                    file_name=str(payload.get("file_name") or "attachment.bin"),
+                    raw=raw,
+                )
+                payload["storage_ref"] = stored["storage_ref"]
+                payload["checksum"] = stored["checksum"]
+                payload["byte_size"] = stored["byte_size"]
+            # Never forward raw bytes / public URLs to Apps Script.
+            payload.pop("content_base64", None)
+            payload.pop("public_url", None)
+            payload.pop("drive_url", None)
+
+        result = await self.repo.aattachment_action(action, payload)
+        log_extra(
+            logger,
+            20,
+            "Job attachment action",
+            action=action,
+            staff_id=staff_id,
+            actor_role=actor_role,
+            job_sheet_id=str(body.get("job_sheet_id") or ""),
+            attachment_id=str(body.get("attachment_id") or (result.get("attachment") or {}).get("attachment_id") or ""),
+        )
+        return result
+
     def _render_pdf(self, data: dict[str, Any], *, report_type: str = "") -> dict[str, Any]:
         """Render + validate a PDF from returned report data. Never returns invalid bytes."""
         try:

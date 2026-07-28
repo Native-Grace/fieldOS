@@ -73,6 +73,13 @@ class Settings(BaseSettings):
 
     cors_origins: str = Field(default="http://localhost:8080,http://localhost:5173", alias="CORS_ORIGINS")
 
+    # Phase 3G — document delivery (email + optional Drive filing). Both off by default.
+    document_email_enabled: bool = Field(default=False, alias="DOCUMENT_EMAIL_ENABLED")
+    document_email_provider: str = Field(default="", alias="DOCUMENT_EMAIL_PROVIDER")
+    document_drive_filing_enabled: bool = Field(default=False, alias="DOCUMENT_DRIVE_FILING_ENABLED")
+    document_drive_root_folder_id: str = Field(default="", alias="DOCUMENT_DRIVE_ROOT_FOLDER_ID")
+    max_attachment_mb: int = Field(default=15, alias="MAX_ATTACHMENT_MB")
+
     @property
     def allowed_mimes(self) -> set[str]:
         return {m.strip().lower() for m in self.allowed_audio_mimes.split(",") if m.strip()}
@@ -80,6 +87,10 @@ class Settings(BaseSettings):
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def max_attachment_bytes(self) -> int:
+        return self.max_attachment_mb * 1024 * 1024
 
     @property
     def cors_origin_list(self) -> list[str]:

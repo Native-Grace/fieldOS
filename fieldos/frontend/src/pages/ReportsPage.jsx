@@ -7,6 +7,7 @@ import {
   downloadAuthenticatedFile,
   getStaff,
 } from "../api";
+import DeliveryPanel from "../components/DeliveryPanel.jsx";
 import {
   REPORT_TYPES,
   buildReportPreviewBody,
@@ -662,6 +663,12 @@ export default function ReportsPage() {
                   </tbody>
                 </table>
               </div>
+            )}
+            {manager && (
+              <DeliveryPanel
+                reportBatchId={selectedBatch.report_batch_id}
+                sourceType="report"
+              />
             )}
           </div>
         )}

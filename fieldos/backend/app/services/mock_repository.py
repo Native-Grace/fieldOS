@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from app.core.config import Settings
 from app.services.apps_script import AppsScriptClient
 from app.services.mock_completion import MockCompletionMixin
+from app.services.mock_delivery import MockDeliveryMixin
 from app.services.mock_export import MockExportMixin
 from app.services.mock_rates import MockRatesMixin
 from app.services.mock_reports import MockReportsMixin
@@ -25,10 +26,13 @@ MOCK_ASSUMPTIONS = [
     "Rates, mappings and financial snapshots start empty — no rates are seeded and unresolved rates never price as zero.",
     "Pricing identity uses job sheet customer_id / project_id columns only; display names are never used as identifiers.",
     "Report PDFs render in FastAPI from a frozen JSON snapshot; transcripts, Drive IDs and money are never printed.",
+    "Document email and Drive filing never auto-send; both are disabled in mock/local/test.",
 ]
 
 
-class MockJobRepository(MockCompletionMixin, MockExportMixin, MockRatesMixin, MockReportsMixin):
+class MockJobRepository(
+    MockCompletionMixin, MockExportMixin, MockRatesMixin, MockReportsMixin, MockDeliveryMixin
+):
     def __init__(self, settings: Settings, apps_script: AppsScriptClient | None = None):
         self.settings = settings
         self.store = MockStore(settings)

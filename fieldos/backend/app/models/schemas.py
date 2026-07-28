@@ -1209,3 +1209,161 @@ class ReportBatchListResponse(BaseModel):
     items: List[ReportBatchListItem] = Field(default_factory=list)
     data_mode: str
     assumptions: List[str]
+
+
+# --------------------------------------------------------------------------
+# Phase 3G — PDF delivery, document control, job attachments.
+# Email and Drive filing never auto-send; both are gated and off by default.
+# --------------------------------------------------------------------------
+
+
+class DeliveryOut(BaseModel):
+    delivery_id: str
+    report_batch_id: str = ""
+    job_sheet_id: str = ""
+    completion_id: str = ""
+    document_type: str = ""
+    recipient_type: str = ""
+    recipient_email: str = ""
+    delivery_method: str = ""
+    status: str = ""
+    sent_by: str = ""
+    sent_at: Optional[Union[datetime, str]] = None
+    failed_at: Optional[Union[datetime, str]] = None
+    failure_reason: str = ""
+    checksum: str = ""
+    template_version: str = ""
+    supersedes_delivery_id: str = ""
+    idempotency_key: str = ""
+    file_drive: bool = False
+    attachment_ids: List[str] = Field(default_factory=list)
+    subject: str = ""
+    body_preview: str = ""
+    version: int = 1
+    created_at: Optional[Union[datetime, str]] = None
+    created_by: str = ""
+
+
+class EmailPreviewOut(BaseModel):
+    to: str = ""
+    subject: str = ""
+    body: str = ""
+
+
+class DeliveryOptionsResponse(BaseModel):
+    profiles: List[str] = Field(default_factory=list)
+    statuses: List[str] = Field(default_factory=list)
+    delivery_methods: List[str] = Field(default_factory=list)
+    template_version: str = ""
+    email_enabled: bool = False
+    drive_filing_enabled: bool = False
+    email_gate_reason: str = ""
+    drive_gate_reason: str = ""
+    antivirus_boundary: str = ""
+    auto_send: bool = False
+    data_mode: str
+    assumptions: List[str]
+
+
+class CreateDeliveryDraftRequest(BaseModel):
+    document_type: str
+    recipient_email: Optional[str] = None
+    recipient_type: Optional[str] = "client"
+    delivery_method: Optional[str] = "email"
+    report_batch_id: Optional[str] = None
+    job_sheet_id: Optional[str] = None
+    completion_id: Optional[str] = None
+    attachment_ids: Optional[List[str]] = None
+    supersedes_delivery_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    project_name: Optional[str] = None
+
+
+class UpdateDeliveryDraftRequest(BaseModel):
+    expected_version: Optional[int] = None
+    document_type: Optional[str] = None
+    recipient_email: Optional[str] = None
+    recipient_type: Optional[str] = None
+    delivery_method: Optional[str] = None
+    attachment_ids: Optional[List[str]] = None
+    customer_name: Optional[str] = None
+    project_name: Optional[str] = None
+
+
+class DeliveryVersionRequest(BaseModel):
+    expected_version: Optional[int] = None
+
+
+class SendDeliveryRequest(DeliveryVersionRequest):
+    confirm_send: bool = False
+    customer_name: Optional[str] = None
+    project_name: Optional[str] = None
+    year: Optional[str] = None
+
+
+class DeliveryResponse(BaseModel):
+    delivery: DeliveryOut
+    email_preview: Optional[EmailPreviewOut] = None
+    replacement: Optional[DeliveryOut] = None
+    sent: Optional[bool] = None
+    idempotent: Optional[bool] = None
+    confirm_required: Optional[bool] = None
+    auto_send: Optional[bool] = None
+    data_mode: str
+    assumptions: List[str]
+
+
+class DeliveryListResponse(BaseModel):
+    items: List[DeliveryOut] = Field(default_factory=list)
+    data_mode: str
+    assumptions: List[str]
+
+
+class AttachmentOut(BaseModel):
+    attachment_id: str
+    job_sheet_id: str = ""
+    completion_id: str = ""
+    attachment_type: str = "other"
+    file_name: str = ""
+    mime_type: str = ""
+    byte_size: int = 0
+    caption: str = ""
+    uploaded_by: str = ""
+    uploaded_at: Optional[Union[datetime, str]] = None
+    client_visible: bool = False
+    approved_by: str = ""
+    approved_at: Optional[Union[datetime, str]] = None
+    checksum: str = ""
+    status: str = ""
+    version: int = 1
+    has_storage_ref: Optional[bool] = None
+
+
+class UploadAttachmentRequest(BaseModel):
+    job_sheet_id: str
+    file_name: str
+    mime_type: str
+    byte_size: int
+    attachment_type: str = "other"
+    caption: Optional[str] = None
+    completion_id: Optional[str] = None
+    content_base64: Optional[str] = None
+    checksum: Optional[str] = None
+
+
+class SetAttachmentVisibilityRequest(BaseModel):
+    client_visible: bool
+
+
+class AttachmentResponse(BaseModel):
+    attachment: AttachmentOut
+    antivirus_boundary: Optional[str] = None
+    data_mode: str
+    assumptions: List[str]
+
+
+class AttachmentListResponse(BaseModel):
+    items: List[AttachmentOut] = Field(default_factory=list)
+    antivirus_boundary: Optional[str] = None
+    data_mode: str
+    assumptions: List[str]

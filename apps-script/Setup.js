@@ -541,3 +541,98 @@ function migrateSchemaForJobReports() {
   ensureTable("tbl_report_batch_items", reportBatchItemHeaders);
   Logger.log("Phase 3F job report migration completed.");
 }
+
+/**
+ * Phase 3G: document deliveries + job attachments.
+ * Non-destructive. Stores delivery metadata and attachment metadata only —
+ * never PDF bytes, public Drive links, transcripts, or secrets.
+ * Keep headers in sync with FIELDOS_DELIVERY_HEADERS_ / FIELDOS_ATTACHMENT_HEADERS_.
+ */
+function migrateSchemaForDocumentDelivery() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (!spreadsheetId) {
+    throw new Error("Migration Error: 'SPREADSHEET_ID' script property is missing or blank in Project Settings.");
+  }
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+
+  const deliveryHeaders = [
+    "delivery_id",
+    "report_batch_id",
+    "job_sheet_id",
+    "completion_id",
+    "document_type",
+    "recipient_type",
+    "recipient_email",
+    "delivery_method",
+    "status",
+    "sent_by",
+    "sent_at",
+    "failed_at",
+    "failure_reason",
+    "checksum",
+    "template_version",
+    "supersedes_delivery_id",
+    "idempotency_key",
+    "drive_file_id",
+    "attachment_ids_json",
+    "subject",
+    "body_preview",
+    "created_by",
+    "created_at",
+    "version"
+  ];
+  const attachmentHeaders = [
+    "attachment_id",
+    "job_sheet_id",
+    "completion_id",
+    "attachment_type",
+    "file_name",
+    "mime_type",
+    "byte_size",
+    "caption",
+    "uploaded_by",
+    "uploaded_at",
+    "client_visible",
+    "approved_by",
+    "approved_at",
+    "storage_ref",
+    "checksum",
+    "status",
+    "version"
+  ];
+
+  function ensureTable(sheetName, columns) {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.getRange(1, 1, 1, columns.length).setValues([columns]);
+      sheet
+        .getRange(1, 1, 1, columns.length)
+        .setFontWeight("bold")
+        .setBackground("#f3f3f3")
+        .setHorizontalAlignment("left");
+      sheet.autoResizeColumns(1, columns.length);
+      Logger.log("Success [" + sheetName + "]: Created sheet with headers.");
+      return;
+    }
+    const lastCol = sheet.getLastColumn();
+    const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+    let nextCol = lastCol + 1;
+    columns.forEach(function (colName) {
+      if (headers.indexOf(colName) >= 0) {
+        Logger.log("Notice [" + sheetName + "]: '" + colName + "' already exists. Skipping.");
+        return;
+      }
+      const cell = sheet.getRange(1, nextCol);
+      cell.setValue(colName);
+      cell.setFontWeight("bold").setBackground("#f3f3f3").setHorizontalAlignment("left");
+      sheet.autoResizeColumns(nextCol, 1);
+      Logger.log("Success [" + sheetName + "]: Added column -> " + colName);
+      nextCol += 1;
+    });
+  }
+
+  ensureTable("tbl_document_deliveries", deliveryHeaders);
+  ensureTable("tbl_job_attachments", attachmentHeaders);
+  Logger.log("Phase 3G document delivery migration completed.");
+}

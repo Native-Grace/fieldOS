@@ -37,6 +37,10 @@ const CompletionFinancialLineRepository = new BaseRepository('tbl_completion_fin
 const ReportBatchRepository = new BaseRepository('tbl_report_batches', 'report_batch_id', 'RPT');
 const ReportBatchItemRepository = new BaseRepository('tbl_report_batch_items', 'report_batch_item_id', 'RPI');
 
+// Phase 3G — document deliveries and job attachments.
+const DocumentDeliveryRepository = new BaseRepository('tbl_document_deliveries', 'delivery_id', 'DLV');
+const JobAttachmentRepository = new BaseRepository('tbl_job_attachments', 'attachment_id', 'ATT');
+
 const RecordingRepository = new BaseRepository({
   tableName: 'tbl_recordings',
   idField: 'recording_id',

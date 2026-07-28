@@ -418,3 +418,61 @@ class MockStore:
         rows = self._read(self.financial_snapshot_lines_path)
         rows.extend(lines)
         self._write(self.financial_snapshot_lines_path, rows)
+
+    # Phase 3G — document deliveries and job attachments.
+    @property
+    def document_deliveries_path(self) -> Path:
+        return self.root / "document_deliveries.json"
+
+    @property
+    def job_attachments_path(self) -> Path:
+        return self.root / "job_attachments.json"
+
+    def list_document_deliveries(self) -> list[dict[str, Any]]:
+        return self._read(self.document_deliveries_path)
+
+    def get_document_delivery(self, delivery_id: str) -> dict[str, Any] | None:
+        for row in self.list_document_deliveries():
+            if str(row.get("delivery_id")) == str(delivery_id):
+                return row
+        return None
+
+    def upsert_document_delivery(self, delivery: dict[str, Any]) -> dict[str, Any]:
+        rows = self.list_document_deliveries()
+        delivery_id = str(delivery.get("delivery_id") or "")
+        replaced = False
+        for idx, row in enumerate(rows):
+            if str(row.get("delivery_id")) == delivery_id:
+                rows[idx] = delivery
+                replaced = True
+                break
+        if not replaced:
+            rows.append(delivery)
+        self._write(self.document_deliveries_path, rows)
+        return delivery
+
+    def list_job_attachments(self, job_sheet_id: str | None = None) -> list[dict[str, Any]]:
+        rows = self._read(self.job_attachments_path)
+        if job_sheet_id is None:
+            return rows
+        return [row for row in rows if str(row.get("job_sheet_id")) == str(job_sheet_id)]
+
+    def get_job_attachment(self, attachment_id: str) -> dict[str, Any] | None:
+        for row in self.list_job_attachments():
+            if str(row.get("attachment_id")) == str(attachment_id):
+                return row
+        return None
+
+    def upsert_job_attachment(self, attachment: dict[str, Any]) -> dict[str, Any]:
+        rows = self.list_job_attachments()
+        attachment_id = str(attachment.get("attachment_id") or "")
+        replaced = False
+        for idx, row in enumerate(rows):
+            if str(row.get("attachment_id")) == attachment_id:
+                rows[idx] = attachment
+                replaced = True
+                break
+        if not replaced:
+            rows.append(attachment)
+        self._write(self.job_attachments_path, rows)
+        return attachment

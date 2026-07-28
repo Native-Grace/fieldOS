@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, downloadAuthenticatedFile, uploadRecording, getStaff } from "../api";
 import ManagerReviewPanel from "../components/ManagerReviewPanel";
 import JobCompletionPanel from "../components/JobCompletionPanel";
+import DeliveryPanel from "../components/DeliveryPanel.jsx";
 import {
   ACCEPT_ATTR,
   buildFilePreview,
@@ -267,6 +268,14 @@ export default function JobDetailPage() {
 
       <ManagerReviewPanel jobSheetId={job.job_sheet_id} onUpdated={() => load()} />
       <JobCompletionPanel jobSheetId={job.job_sheet_id} onUpdated={() => load()} />
+      {manager ? (
+        <DeliveryPanel
+          jobSheetId={jobSheetId || job.job_sheet_id || ""}
+          sourceType="job"
+          customerName={job.customer_name || ""}
+          projectName={job.project_name || ""}
+        />
+      ) : null}
 
       <div className="card">
         <h2 style={{ marginTop: 0, fontSize: "1.05rem" }}>Upload audio file</h2>

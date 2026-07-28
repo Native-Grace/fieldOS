@@ -339,6 +339,22 @@ class AppsScriptJobRepository:
             return result
         return data
 
+    async def adelivery_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.delivery_action(action, body)
+        except AppsScriptError as exc:
+            _raise_from_rates_apps(exc)
+            raise
+        return result.get("data") if isinstance(result.get("data"), dict) else {}
+
+    async def aattachment_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await self.apps_script.attachment_action(action, body)
+        except AppsScriptError as exc:
+            _raise_from_rates_apps(exc)
+            raise
+        return result.get("data") if isinstance(result.get("data"), dict) else {}
+
     async def aget_job_pdf_data(
         self, job_sheet_id: str, staff_id: str, actor_role: str, *, actor_identity: str = ""
     ) -> dict[str, Any]:

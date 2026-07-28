@@ -29,7 +29,10 @@ Live Web App URL / secrets remain in local `.env` only (never commit). Further A
 | `JobCompletion.js` | Completion reads used by pricing readiness |
 | `JobReportHelpers.js` | Phase 3F pure report helpers — forbidden-key scrub, display-only task lines, filters, grouping, page estimate, PDF data shape, filenames, audit payload |
 | `JobReports.js` | Phase 3F `FieldOSJobReports` — report options, preview, report batches (Draft → Validated → Generated / Cancelled) and single-job PDF data |
-| `Repositories.js` | Also adds the two Phase 3F repositories (`RPT`, `RPI`) |
+| `DocumentDeliveryHelpers.js` | Phase 3G pure delivery/attachment helpers — PDF profiles, client scrub, idempotency, attachment allowlists |
+| `DocumentDelivery.js` | Phase 3G `FieldOSDocumentDelivery` — delivery drafts, attachment metadata, audit (PDF/email/Drive gated in FastAPI) |
+| `Repositories.js` | Also adds the two Phase 3F repositories (`RPT`, `RPI`) and Phase 3G (`DLV`, `ATT`) |
+| `Setup.js` | Adds `migrateSchemaForRatesFinancial()`, `migrateSchemaForJobReports()`, and `migrateSchemaForDocumentDelivery()` |
 
 ### Phase 3E deploy note
 
@@ -46,6 +49,14 @@ spreadsheet first. The migration only creates `tbl_report_batches` and
 `tbl_report_batch_items`. Report batches freeze scrubbed report **data** in
 `snapshot_json` — never PDF bytes, transcripts, Drive identifiers or secrets. Generated
 batches are immutable; regenerating means creating a new batch.
+
+### Phase 3G deploy note
+
+Push `DocumentDeliveryHelpers.js` and `DocumentDelivery.js` alongside Gateway / Router /
+Repositories / Setup, then run `migrateSchemaForDocumentDelivery()`. Leave
+`DOCUMENT_EMAIL_ENABLED` and `DOCUMENT_DRIVE_FILING_ENABLED` false until providers are
+wired. Sends always require `confirm_send=true` — there is no auto-send. See
+`docs/PHASE3G_PDF_DELIVERY_AND_ATTACHMENTS.md`.
 
 ### Live verification (Phase 2 voice path)
 

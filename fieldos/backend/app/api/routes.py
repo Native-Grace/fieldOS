@@ -81,8 +81,22 @@ from app.models.schemas import (
     ReportPreviewResponse,
     ReturnJobRequest,
     ReviewEditRequest,
+    SendDeliveryRequest,
+    SetAttachmentVisibilityRequest,
     StaffOut,
     SupersedeFinancialSnapshotRequest,
+    UpdateDeliveryDraftRequest,
+    UploadAttachmentRequest,
+    AttachmentListResponse,
+    AttachmentOut,
+    AttachmentResponse,
+    CreateDeliveryDraftRequest,
+    DeliveryListResponse,
+    DeliveryOptionsResponse,
+    DeliveryOut,
+    DeliveryResponse,
+    DeliveryVersionRequest,
+    EmailPreviewOut,
     XeroMappingIn,
     XeroMappingListResponse,
     XeroMappingResponse,
@@ -1043,6 +1057,318 @@ async def job_summary_pdf(
         actor_identity=actor_identity(claims),
     )
     return _pdf_response(rendered)
+
+
+# --------------------------------------------------------------------------
+# Phase 3G — document deliveries and job attachments (manager/admin for send).
+# --------------------------------------------------------------------------
+
+
+async def _delivery_call(
+    action: str,
+    *,
+    claims: dict,
+    service: JobService,
+    body: dict,
+) -> dict:
+    role = require_manager_or_admin(claims)
+    return await service.delivery_action(
+        action,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        actor_identity=actor_identity(claims),
+        body=body,
+    )
+
+
+def _delivery_response(result: dict, settings: Settings, service: JobService) -> DeliveryResponse:
+    preview = result.get("email_preview")
+    replacement = result.get("replacement")
+    return DeliveryResponse(
+        delivery=DeliveryOut.model_validate(result.get("delivery") or {}),
+        email_preview=EmailPreviewOut.model_validate(preview) if isinstance(preview, dict) else None,
+        replacement=DeliveryOut.model_validate(replacement) if isinstance(replacement, dict) else None,
+        sent=result.get("sent"),
+        idempotent=result.get("idempotent"),
+        confirm_required=result.get("confirm_required"),
+        auto_send=result.get("auto_send"),
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/deliveries/options", response_model=DeliveryOptionsResponse)
+async def delivery_options(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryOptionsResponse:
+    result = await _delivery_call("delivery_options", claims=claims, service=service, body={})
+    return DeliveryOptionsResponse(
+        **result,
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/deliveries", response_model=DeliveryListResponse)
+async def list_deliveries(
+    job_sheet_id: Optional[str] = None,
+    report_batch_id: Optional[str] = None,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryListResponse:
+    body: dict = {}
+    if job_sheet_id:
+        body["job_sheet_id"] = job_sheet_id
+    if report_batch_id:
+        body["report_batch_id"] = report_batch_id
+    result = await _delivery_call("list_deliveries", claims=claims, service=service, body=body)
+    return DeliveryListResponse(
+        items=[DeliveryOut.model_validate(item) for item in (result.get("items") or [])],
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.get("/deliveries/{delivery_id}", response_model=DeliveryResponse)
+async def get_delivery(
+    delivery_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "get_delivery",
+        claims=claims,
+        service=service,
+        body={"delivery_id": delivery_id},
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.post("/deliveries", response_model=DeliveryResponse)
+async def create_delivery_draft(
+    body: CreateDeliveryDraftRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "create_delivery_draft",
+        claims=claims,
+        service=service,
+        body=body.model_dump(exclude_none=True),
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.patch("/deliveries/{delivery_id}", response_model=DeliveryResponse)
+async def update_delivery_draft(
+    delivery_id: str,
+    body: UpdateDeliveryDraftRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "update_delivery_draft",
+        claims=claims,
+        service=service,
+        body={"delivery_id": delivery_id, **body.model_dump(exclude_none=True)},
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.post("/deliveries/{delivery_id}/preview", response_model=DeliveryResponse)
+async def preview_delivery(
+    delivery_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "preview_delivery",
+        claims=claims,
+        service=service,
+        body={"delivery_id": delivery_id},
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.post("/deliveries/{delivery_id}/validate", response_model=DeliveryResponse)
+async def validate_delivery(
+    delivery_id: str,
+    body: DeliveryVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "validate_delivery",
+        claims=claims,
+        service=service,
+        body={"delivery_id": delivery_id, **body.model_dump(exclude_none=True)},
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.post("/deliveries/{delivery_id}/send", response_model=DeliveryResponse)
+async def send_delivery(
+    delivery_id: str,
+    body: SendDeliveryRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "send_delivery",
+        claims=claims,
+        service=service,
+        body={"delivery_id": delivery_id, **body.model_dump(exclude_none=True)},
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.post("/deliveries/{delivery_id}/retry", response_model=DeliveryResponse)
+async def retry_delivery(
+    delivery_id: str,
+    body: SendDeliveryRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "retry_delivery",
+        claims=claims,
+        service=service,
+        body={"delivery_id": delivery_id, **body.model_dump(exclude_none=True)},
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.post("/deliveries/{delivery_id}/cancel", response_model=DeliveryResponse)
+async def cancel_delivery(
+    delivery_id: str,
+    body: DeliveryVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "cancel_delivery",
+        claims=claims,
+        service=service,
+        body={"delivery_id": delivery_id, **body.model_dump(exclude_none=True)},
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.post("/deliveries/{delivery_id}/supersede", response_model=DeliveryResponse)
+async def supersede_delivery(
+    delivery_id: str,
+    body: DeliveryVersionRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DeliveryResponse:
+    result = await _delivery_call(
+        "supersede_delivery",
+        claims=claims,
+        service=service,
+        body={"delivery_id": delivery_id, **body.model_dump(exclude_none=True)},
+    )
+    return _delivery_response(result, settings, service)
+
+
+@router.get("/jobs/{job_sheet_id}/attachments", response_model=AttachmentListResponse)
+async def list_job_attachments(
+    job_sheet_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> AttachmentListResponse:
+    result = await service.attachment_action(
+        "list_attachments",
+        staff_id=str(claims["sub"]),
+        actor_role=_report_role(claims),
+        actor_identity=actor_identity(claims),
+        body={"job_sheet_id": job_sheet_id},
+    )
+    return AttachmentListResponse(
+        items=[AttachmentOut.model_validate(item) for item in (result.get("items") or [])],
+        antivirus_boundary=result.get("antivirus_boundary"),
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/attachments", response_model=AttachmentResponse)
+async def upload_attachment(
+    body: UploadAttachmentRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> AttachmentResponse:
+    result = await service.attachment_action(
+        "upload_attachment",
+        staff_id=str(claims["sub"]),
+        actor_role=_report_role(claims),
+        actor_identity=actor_identity(claims),
+        body=body.model_dump(exclude_none=True),
+    )
+    return AttachmentResponse(
+        attachment=AttachmentOut.model_validate(result.get("attachment") or {}),
+        antivirus_boundary=result.get("antivirus_boundary"),
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.delete("/attachments/{attachment_id}", response_model=AttachmentResponse)
+async def delete_attachment(
+    attachment_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> AttachmentResponse:
+    require_manager_or_admin(claims)
+    result = await service.attachment_action(
+        "delete_attachment",
+        staff_id=str(claims["sub"]),
+        actor_role=_report_role(claims),
+        actor_identity=actor_identity(claims),
+        body={"attachment_id": attachment_id},
+    )
+    return AttachmentResponse(
+        attachment=AttachmentOut.model_validate(result.get("attachment") or {}),
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
+
+
+@router.post("/attachments/{attachment_id}/client-visible", response_model=AttachmentResponse)
+async def set_attachment_client_visible(
+    attachment_id: str,
+    body: SetAttachmentVisibilityRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> AttachmentResponse:
+    require_manager_or_admin(claims)
+    result = await service.attachment_action(
+        "set_attachment_client_visible",
+        staff_id=str(claims["sub"]),
+        actor_role=_report_role(claims),
+        actor_identity=actor_identity(claims),
+        body={"attachment_id": attachment_id, **body.model_dump()},
+    )
+    return AttachmentResponse(
+        attachment=AttachmentOut.model_validate(result.get("attachment") or {}),
+        data_mode=settings.data_mode,
+        assumptions=service.assumptions(),
+    )
 
 
 # --------------------------------------------------------------------------

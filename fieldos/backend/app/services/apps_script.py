@@ -60,6 +60,29 @@ REPORT_ACTIONS = (
     "get_report_batch_pdf_data",
 )
 
+# Phase 3G document delivery + attachment metadata actions.
+DELIVERY_ACTIONS = (
+    "delivery_options",
+    "list_deliveries",
+    "get_delivery",
+    "create_delivery_draft",
+    "update_delivery_draft",
+    "preview_delivery",
+    "validate_delivery",
+    "send_delivery",
+    "retry_delivery",
+    "cancel_delivery",
+    "supersede_delivery",
+    "record_delivery_outcome",
+)
+
+ATTACHMENT_ACTIONS = (
+    "list_attachments",
+    "upload_attachment",
+    "delete_attachment",
+    "set_attachment_client_visible",
+)
+
 
 class AppsScriptError(Exception):
     """Normalized Apps Script / transport failure for repository layer."""
@@ -374,6 +397,18 @@ class AppsScriptClient:
         """Phase 3F report batch actions — returns report data, never PDF bytes."""
         if action not in REPORT_ACTIONS:
             raise AppsScriptError(f"Unsupported report action: {action}", http_status=400)
+        safe_body = redact_secrets(body)
+        return await self._post(action, {**safe_body, **self._column_payload()})
+
+    async def delivery_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        if action not in DELIVERY_ACTIONS:
+            raise AppsScriptError(f"Unsupported delivery action: {action}", http_status=400)
+        safe_body = redact_secrets(body)
+        return await self._post(action, {**safe_body, **self._column_payload()})
+
+    async def attachment_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        if action not in ATTACHMENT_ACTIONS:
+            raise AppsScriptError(f"Unsupported attachment action: {action}", http_status=400)
         safe_body = redact_secrets(body)
         return await self._post(action, {**safe_body, **self._column_payload()})
 

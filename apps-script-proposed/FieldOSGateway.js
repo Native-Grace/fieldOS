@@ -187,6 +187,25 @@ function fieldosRouteRequest(payload) {
       return FieldOSJobReports.getReportBatchPdfData(payload);
     case "get_job_pdf_data":
       return FieldOSJobReports.getJobPdfData(payload);
+    // Phase 3G — deliveries + attachments (control plane; PDF/email/Drive gated in FastAPI).
+    case "delivery_options":
+      return FieldOSDocumentDelivery.deliveryOptions(payload);
+    case "list_deliveries":
+      return FieldOSDocumentDelivery.listDeliveries(payload);
+    case "get_delivery":
+      return FieldOSDocumentDelivery.getDelivery(payload);
+    case "create_delivery_draft":
+      return FieldOSDocumentDelivery.createDeliveryDraft(payload);
+    case "update_delivery_draft":
+      return FieldOSDocumentDelivery.updateDeliveryDraft(payload);
+    case "record_delivery_outcome":
+      return FieldOSDocumentDelivery.recordDeliveryOutcome(payload);
+    case "list_attachments":
+      return FieldOSDocumentDelivery.listAttachments(payload);
+    case "upload_attachment":
+      return FieldOSDocumentDelivery.uploadAttachment(payload);
+    case "set_attachment_client_visible":
+      return FieldOSDocumentDelivery.setAttachmentClientVisible(payload);
     default:
       return null;
   }
