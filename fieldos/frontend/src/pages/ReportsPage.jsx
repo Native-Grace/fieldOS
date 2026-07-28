@@ -273,13 +273,16 @@ export default function ReportsPage() {
 
   async function downloadBatch() {
     if (!selectedBatch) return;
+    const reportBatchId = selectedBatch.report_batch_id;
     setBusy("download");
     setError("");
+    setMessage("");
     try {
-      await downloadAuthenticatedFile(`/reports/${encodeURIComponent(selectedBatch.report_batch_id)}/download`, {
-        fallbackName: selectedBatch.file_name || "nativegrace_report.pdf",
-      });
-      setMessage(`Downloaded ${selectedBatch.file_name || "report.pdf"}.`);
+      const { fileName } = await downloadAuthenticatedFile(
+        `/reports/${encodeURIComponent(reportBatchId)}/download`,
+        selectedBatch.file_name || `nativegrace_report_${reportBatchId}.pdf`
+      );
+      setMessage(`Downloaded ${fileName}.`);
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -295,11 +298,13 @@ export default function ReportsPage() {
     }
     setBusy("job-pdf");
     setError("");
+    setMessage("");
     try {
-      await downloadAuthenticatedFile(jobSummaryPdfPath(id), {
-        fallbackName: `nativegrace_job_${id}.pdf`,
-      });
-      setMessage(`Downloaded job summary for ${id}.`);
+      const { fileName } = await downloadAuthenticatedFile(
+        jobSummaryPdfPath(id),
+        `nativegrace_job_${id}.pdf`
+      );
+      setMessage(`Downloaded ${fileName}.`);
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -485,7 +490,7 @@ export default function ReportsPage() {
             disabled={!!busy || !form.job_sheet_id}
             onClick={downloadJobPdf}
           >
-            Download job PDF
+            {busy === "job-pdf" ? "Downloading…" : "Download job PDF"}
           </button>
         </div>
         <p className="small muted">{emptyPreviewMessage()}</p>
@@ -618,7 +623,7 @@ export default function ReportsPage() {
                 disabled={!!busy || !canDownloadReport(selectedBatch.status)}
                 onClick={downloadBatch}
               >
-                Download PDF
+                {busy === "download" ? "Downloading…" : "Download PDF"}
               </button>
               <button
                 className="btn btn-ghost"

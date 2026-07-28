@@ -214,7 +214,7 @@ export default function JobDetailPage() {
             disabled={pdfBusy}
             onClick={downloadJobPdf}
           >
-            Download job PDF
+            {pdfBusy ? "Downloading…" : "Download job PDF"}
           </button>
           <Link
             className="btn btn-ghost"

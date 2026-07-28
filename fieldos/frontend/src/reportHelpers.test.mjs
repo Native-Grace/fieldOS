@@ -205,6 +205,7 @@ test("routes and navigation wire reports for manager and staff", () => {
   assert.match(page, /\/reports\/preview/);
   assert.match(page, /Generate PDF/);
   assert.match(page, /downloadAuthenticatedFile/);
+  assert.match(page, /Downloading…/);
   assert.match(page, /useSearchParams/);
   assert.match(page, /emptyPreviewMessage/);
   assert.match(page, /window\.confirm/);
@@ -213,4 +214,6 @@ test("routes and navigation wire reports for manager and staff", () => {
   assert.match(page, /Group by/);
   assert.match(emptyPreviewMessage(), /never created automatically|PDFs are never created automatically/i);
   assert.match(page, /reportTypeOptionsForRole/);
+  assert.ok(!page.includes("window.open("));
+  assert.ok(!/href=\{`\/api\/v1\/reports/.test(page));
 });

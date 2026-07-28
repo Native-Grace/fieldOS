@@ -28,12 +28,24 @@ export function clearSession() {
   localStorage.removeItem(STAFF_KEY);
 }
 
+/** Alias kept for callers that clear auth after a 401 download. */
+export function clearToken() {
+  clearSession();
+}
+
 async function parseError(res) {
   try {
     const body = await res.json();
-    return body.detail || body.message || res.statusText;
+    const detail = body.detail || body.message || res.statusText;
+    if (Array.isArray(detail)) {
+      return detail
+        .map((row) => (typeof row === "string" ? row : row?.msg || JSON.stringify(row)))
+        .filter(Boolean)
+        .join("; ");
+    }
+    return typeof detail === "string" ? detail : JSON.stringify(detail);
   } catch {
-    return res.statusText;
+    return res.statusText || `Request failed (${res.status})`;
   }
 }
 
@@ -57,36 +69,117 @@ export async function api(path, options = {}) {
   return res.json();
 }
 
-/** Authenticated Blob download — token stays in Authorization header, never in the URL. */
-export async function downloadAuthenticatedFile(path, { fallbackName = "export.csv" } = {}) {
+/**
+ * Parse a Content-Disposition filename, supporting quoted and UTF-8 forms.
+ * Never logs or returns tokens — disposition must not carry credentials.
+ */
+export function parseContentDispositionFilename(disposition) {
+  const header = String(disposition || "");
+  if (!header) return "";
+  const utf8 = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+  if (utf8?.[1]) {
+    try {
+      return decodeURIComponent(utf8[1].trim().replace(/^"+|"+$/g, ""));
+    } catch {
+      return utf8[1].trim().replace(/^"+|"+$/g, "");
+    }
+  }
+  const quoted = /filename\s*=\s*"([^"]+)"/i.exec(header);
+  if (quoted?.[1]) return quoted[1];
+  const bare = /filename\s*=\s*([^;]+)/i.exec(header);
+  if (bare?.[1]) return bare[1].trim().replace(/^"+|"+$/g, "");
+  return "";
+}
+
+/**
+ * Authenticated binary download.
+ *
+ * Token stays in the Authorization header — never in the URL, query string,
+ * filename, or logs. Triggers a same-tab blob download so /reports is not left.
+ *
+ * @param {string} path API path under /api/v1 (e.g. `/reports/RPT-1/download`)
+ * @param {string|{fallbackName?:string,fallbackFilename?:string,expectPdf?:boolean,triggerDownload?:boolean}} [fallbackOrOptions]
+ * @returns {Promise<{blob: Blob, fileName: string}>}
+ */
+export async function downloadAuthenticatedFile(path, fallbackOrOptions = "download.bin") {
+  let fallbackName = "download.bin";
+  let expectPdf;
+  let triggerDownload = true;
+  if (typeof fallbackOrOptions === "string") {
+    fallbackName = fallbackOrOptions || "download.bin";
+  } else if (fallbackOrOptions && typeof fallbackOrOptions === "object") {
+    fallbackName =
+      fallbackOrOptions.fallbackName ||
+      fallbackOrOptions.fallbackFilename ||
+      "download.bin";
+    if (typeof fallbackOrOptions.expectPdf === "boolean") {
+      expectPdf = fallbackOrOptions.expectPdf;
+    }
+    if (typeof fallbackOrOptions.triggerDownload === "boolean") {
+      triggerDownload = fallbackOrOptions.triggerDownload;
+    }
+  }
+  if (typeof expectPdf !== "boolean") {
+    expectPdf = /\.pdf$/i.test(fallbackName) || /\.pdf(\?|$)/i.test(String(path));
+  }
+
   const headers = {};
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`/api/v1${path}`, { headers });
-  if (res.status === 401) {
+
+  const response = await fetch(`/api/v1${path}`, {
+    method: "GET",
+    headers,
+  });
+
+  if (response.status === 401) {
     clearSession();
-    throw new ApiError("Session expired. Please sign in again.", 401);
+    throw new ApiError("Your session has expired. Please sign in again.", 401);
   }
-  if (!res.ok) {
-    throw new ApiError(await parseError(res), res.status);
+
+  if (!response.ok) {
+    let message = `Download failed (${response.status})`;
+    try {
+      message = (await parseError(response)) || message;
+    } catch {
+      /* keep status message */
+    }
+    throw new ApiError(message, response.status);
   }
-  const blob = await res.blob();
-  const disposition = res.headers.get("Content-Disposition") || "";
-  const match = /filename="([^"]+)"/i.exec(disposition);
-  const fileName = match?.[1] || fallbackName;
+
+  const blob = await response.blob();
+  if (!blob || !blob.size) {
+    throw new ApiError(
+      expectPdf ? "The downloaded PDF was empty." : "The downloaded file was empty.",
+      response.status || 422
+    );
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (expectPdf && !contentType.toLowerCase().includes("application/pdf")) {
+    throw new ApiError("The server did not return a PDF.", response.status || 422);
+  }
+
+  const disposition = response.headers.get("content-disposition") || "";
+  const fileName = parseContentDispositionFilename(disposition) || fallbackName;
+
+  if (triggerDownload) {
+    triggerBrowserDownload(blob, fileName);
+  }
+
   return { blob, fileName };
 }
 
 export function triggerBrowserDownload(blob, fileName) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = fileName || "download.bin";
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 /** Upload with progress via XHR (fetch has no upload progress). */
@@ -127,7 +220,17 @@ export function uploadRecording(
     const type = mimeType || blob.type || "audio/webm";
     let name = filename || (blob && blob.name) || "";
     if (!name) {
-      const ext = type.includes("mp4") ? "mp4" : type.includes("mpeg") || type.includes("mp3") ? "mp3" : type.includes("wav") ? "wav" : type.includes("ogg") ? "ogg" : type.includes("flac") ? "flac" : "webm";
+      const ext = type.includes("mp4")
+        ? "mp4"
+        : type.includes("mpeg") || type.includes("mp3")
+          ? "mp3"
+          : type.includes("wav")
+            ? "wav"
+            : type.includes("ogg")
+              ? "ogg"
+              : type.includes("flac")
+                ? "flac"
+                : "webm";
       name = `recording.${ext}`;
     }
     form.append("file", blob, name);

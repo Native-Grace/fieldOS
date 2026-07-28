@@ -6,7 +6,6 @@ import {
   clearSession,
   downloadAuthenticatedFile,
   getStaff,
-  triggerBrowserDownload,
 } from "../api";
 import {
   EXPORT_TYPES,
@@ -230,11 +229,10 @@ export default function CompletionsDashboardPage() {
     setBusy("download");
     setError("");
     try {
-      const { blob, fileName } = await downloadAuthenticatedFile(
+      const { fileName } = await downloadAuthenticatedFile(
         `/exports/${encodeURIComponent(selectedBatch.export_batch_id)}/download`,
-        { fallbackName: selectedBatch.file_name || "export.csv" }
+        { fallbackName: selectedBatch.file_name || "export.csv", expectPdf: false }
       );
-      triggerBrowserDownload(blob, fileName);
       setMessage(`Downloaded ${fileName}.`);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
