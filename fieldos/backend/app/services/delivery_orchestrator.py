@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from app.core.config import Settings
 from app.core.logging import get_logger, log_extra
+from app.core.roles import is_manager_or_admin, normalize_role
 from app.services.delivery_math import (
     DELIVERY_TEMPLATE_VERSION,
     METHOD_DOWNLOAD_ONLY,
@@ -32,7 +33,6 @@ from app.services.delivery_math import (
     build_idempotency_key,
     client_payload_is_clean,
     delivery_transition_error,
-    is_manager_or_admin,
     is_valid_email,
     preview_email,
     report_type_for_profile,
@@ -69,7 +69,7 @@ def _now() -> str:
 
 def _require_manager(actor_role: str) -> None:
     if not is_manager_or_admin(actor_role):
-        raise HTTPException(status_code=403, detail="Forbidden: manager or admin role required.")
+        raise HTTPException(status_code=403, detail="Manager or admin role required.")
 
 
 class DeliveryOrchestrator:
@@ -80,7 +80,8 @@ class DeliveryOrchestrator:
         self.repo = repo
 
     async def execute(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
-        actor_role = str(body.get("actor_role") or "staff")
+        # Authoritative role is always the claims-derived value JobService injected.
+        actor_role = normalize_role(str(body.get("actor_role") or "staff"))
         staff_id = str(body.get("staff_id") or body.get("actor_staff_id") or "")
         _require_manager(actor_role)
 
@@ -99,24 +100,10 @@ class DeliveryOrchestrator:
         raise HTTPException(status_code=400, detail=f"Unsupported orchestrated delivery action: {action}")
 
     async def _as(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
-        # Strip anything that must never reach Sheets.
-        safe = dict(body)
-        for key in (
-            "pdf_bytes",
-            "pdf_base64",
-            "Authorization",
-            "authorization",
-            "webhook_secret",
-            "token",
-            "access_token",
-            "body",
-            "email_body",
-            "content_base64",
-            "drive_url",
-            "public_url",
-            "public_link",
-        ):
-            safe.pop(key, None)
+        from app.services.apps_script_payload import build_apps_script_delivery_payload
+
+        # New allowlisted dict — never forward orchestrator internals / secrets.
+        safe = build_apps_script_delivery_payload(action, body)
         return await self.repo.adelivery_action(action, safe)
 
     async def _get(self, delivery_id: str, *, staff_id: str, actor_role: str) -> dict[str, Any]:

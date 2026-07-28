@@ -63,11 +63,24 @@ var FIELDOS_ATTACHMENT_FORBIDDEN_EXT_ = {
   ".svg": true
 };
 
-function fieldosDeliveryIsManager_(role) {
+function fieldosDeliveryNormaliseRole_(role) {
+  if (typeof fieldosNormalizeRole_ === "function") {
+    return fieldosNormalizeRole_(role);
+  }
   var r = String(role || "")
     .trim()
     .toLowerCase();
-  return r === "manager" || r === "admin" || r === "administrator";
+  if (r === "admin" || r === "administrator") return "admin";
+  if (r === "manager" || r === "mgr") return "manager";
+  return "staff";
+}
+
+function fieldosDeliveryIsManager_(role) {
+  if (typeof fieldosIsManagerOrAdmin_ === "function") {
+    return fieldosIsManagerOrAdmin_(role);
+  }
+  var n = fieldosDeliveryNormaliseRole_(role);
+  return n === "manager" || n === "admin";
 }
 
 function fieldosNormaliseDeliveryEmail_(value) {

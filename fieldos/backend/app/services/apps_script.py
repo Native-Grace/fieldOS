@@ -118,6 +118,10 @@ class AppsScriptClient:
 
     async def _post(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         self._require_configured()
+        # Business body must never already carry transport secrets.
+        from app.services.apps_script_payload import assert_no_forbidden_apps_script_keys
+
+        assert_no_forbidden_apps_script_keys(body, action=action)
         # Safe diagnostics — never log webhook_secret or raw payloads.
         log_extra(
             logger,
@@ -131,7 +135,11 @@ class AppsScriptClient:
             date_column=body.get("date_column"),
             project_column=body.get("project_column"),
             customer_column=body.get("customer_column"),
+            payload_key_count=len(body),
+            payload_keys=sorted(str(k) for k in body.keys()),
         )
+        # Transport envelope only: webhook_secret authenticates the gateway and
+        # must be stripped before business handlers (see Router.doPost).
         payload = {
             **body,
             "action": action,
@@ -403,13 +411,18 @@ class AppsScriptClient:
     async def delivery_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         if action not in DELIVERY_ACTIONS:
             raise AppsScriptError(f"Unsupported delivery action: {action}", http_status=400)
-        safe_body = redact_secrets(body)
+        from app.services.apps_script_payload import build_apps_script_delivery_payload
+
+        # Allowlist business fields only — transport attaches webhook_secret separately.
+        safe_body = build_apps_script_delivery_payload(action, body)
         return await self._post(action, {**safe_body, **self._column_payload()})
 
     async def attachment_action(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         if action not in ATTACHMENT_ACTIONS:
             raise AppsScriptError(f"Unsupported attachment action: {action}", http_status=400)
-        safe_body = redact_secrets(body)
+        from app.services.apps_script_payload import build_apps_script_delivery_payload
+
+        safe_body = build_apps_script_delivery_payload(action, body)
         return await self._post(action, {**safe_body, **self._column_payload()})
 
     async def get_job_pdf_data(self, body: dict[str, Any]) -> dict[str, Any]:

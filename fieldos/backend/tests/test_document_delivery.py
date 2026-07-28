@@ -213,6 +213,95 @@ def test_create_delivery_requires_job_or_report_id(client: TestClient) -> None:
     assert not job_ok.json()["delivery"]["report_batch_id"]
 
 
+def test_delivery_ignores_frontend_actor_role_and_uses_claims(client: TestClient) -> None:
+    """Staff JWT cannot escalate via body.actor_role; manager claims authorise."""
+    from tests.test_job_reports import seed_finalised_job
+
+    seed_finalised_job(job_sheet_id="21759f5d", completion_id="CMP-288481F1")
+
+    staff = _staff_headers(client)
+    denied = client.post(
+        "/api/v1/deliveries",
+        headers=staff,
+        json={
+            "document_type": PROFILE_INTERNAL_JOB_SHEET,
+            "recipient_email": "ops@nativegrace.com",
+            "job_sheet_id": "21759f5d",
+            "delivery_method": "download_only",
+            "actor_role": "manager",
+            "role": "Manager",
+        },
+    )
+    assert denied.status_code == 403
+
+    headers = _manager_headers(client)
+    created = client.post(
+        "/api/v1/deliveries",
+        headers=headers,
+        json={
+            "document_type": PROFILE_INTERNAL_JOB_SHEET,
+            "recipient_email": "ops@nativegrace.com",
+            "job_sheet_id": "21759f5d",
+            "delivery_method": "download_only",
+            "actor_role": "staff",  # must be ignored
+        },
+    )
+    assert created.status_code == 200, created.text
+    delivery = created.json()["delivery"]
+    validated = client.post(
+        f"/api/v1/deliveries/{delivery['delivery_id']}/validate",
+        headers=headers,
+        json={"expected_version": delivery["version"], "actor_role": "staff"},
+    )
+    assert validated.status_code == 200, validated.text
+    assert validated.json()["delivery"]["status"] == STATUS_READY
+
+
+def test_apps_script_client_delivery_action_allowlists_before_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    """delivery_action must not forward secrets in the business body passed to _post."""
+    from app.core.config import Settings
+    from app.services.apps_script import AppsScriptClient
+    import asyncio
+
+    settings = Settings(
+        APPS_SCRIPT_WEBAPP_URL="https://example.invalid/exec",
+        APPS_SCRIPT_WEBHOOK_SECRET="transport-only-secret",
+    )
+    client = AppsScriptClient(settings)
+    captured: dict = {}
+
+    async def fake_post(action, body):
+        captured["action"] = action
+        captured["body"] = dict(body)
+        return {"status": "Success", "action": action, "data": {"delivery": {"delivery_id": "DLV-X"}}}
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    result = asyncio.run(
+        client.delivery_action(
+            "record_delivery_outcome",
+            {
+                "delivery_id": "DLV-X",
+                "status": "Ready",
+                "checksum": "abc",
+                "actor_role": "Manager",
+                "staff_id": "STAFF-MGR001",
+                "webhook_secret": "leak",
+                "smtp_password": "leak",
+                "pdf_bytes": b"%PDF",
+                "email_body": "hi",
+            },
+        )
+    )
+    assert result["status"] == "Success"
+    body = captured["body"]
+    assert body["delivery_id"] == "DLV-X"
+    assert body["actor_role"] == "manager"
+    assert "webhook_secret" not in body
+    assert "smtp_password" not in body
+    assert "pdf_bytes" not in body
+    assert "email_body" not in body
+
+
 def test_delivery_lifecycle_requires_confirm_and_never_autosends(client: TestClient) -> None:
     headers = _manager_headers(client)
     opts = client.get("/api/v1/deliveries/options", headers=headers)

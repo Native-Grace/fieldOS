@@ -60,7 +60,7 @@ var FieldOSDocumentDelivery = {
 
   _actor: function (payload) {
     var p = payload || {};
-    var role = String(p.actor_role || p.role || "staff");
+    var role = fieldosDeliveryNormaliseRole_(p.actor_role || p.role || "staff");
     return {
       staff_id: String(p.actor_staff_id || p.staff_id || ""),
       role: role,
@@ -459,12 +459,25 @@ var FieldOSDocumentDelivery = {
       "authorization",
       "token",
       "access_token",
+      "refresh_token",
       "webhook_secret",
+      "apps_script_webhook_secret",
+      "smtp_password",
+      "smtp_username",
+      "api_key",
+      "client_secret",
+      "provider_secret",
+      "private_key",
+      "bearer_token",
+      "auth_header",
       "drive_url",
       "public_url",
       "public_link",
       "email_body",
-      "body"
+      "body",
+      "settings",
+      "provider_config",
+      "credentials"
     ];
     for (var i = 0; i < forbidden.length; i++) {
       if (Object.prototype.hasOwnProperty.call(p, forbidden[i]) && p[forbidden[i]] != null && p[forbidden[i]] !== "") {

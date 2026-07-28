@@ -59,12 +59,15 @@ def _raise_from_apps(exc: AppsScriptError) -> None:
 
 
 def _raise_from_rates_apps(exc: AppsScriptError) -> None:
-    """Phase 3E mapping: Forbidden→403, Not Found→404, Conflict→409, Validation Error→422, else 502."""
+    """Phase 3E/3G mapping: Forbidden→403 with preserved detail when not a role gate."""
     code = exc.http_status or 502
     message = str(exc) or "Apps Script error"
     lower = message.lower()
     if code == 403 or "forbidden" in lower:
-        raise HTTPException(status_code=403, detail="Manager or admin role required.") from exc
+        if "manager" in lower or "admin" in lower:
+            raise HTTPException(status_code=403, detail="Manager or admin role required.") from exc
+        # Preserve non-role Forbidden reasons (assignment, report scope, etc.).
+        raise HTTPException(status_code=403, detail=message) from exc
     if code == 404 or "not found" in lower:
         raise HTTPException(status_code=404, detail=message) from exc
     if code == 409 or "conflict" in lower or "changed since you loaded" in lower:

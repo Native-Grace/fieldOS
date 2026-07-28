@@ -44,6 +44,48 @@ function fieldosVerifyWebhookSecret_(provided) {
 }
 
 /**
+ * Remove transport/auth secrets after gateway verification.
+ * Business handlers (DocumentDelivery, reports, etc.) must never see these keys.
+ */
+function fieldosStripTransportSecrets_(payload) {
+  const src = payload && typeof payload === "object" ? payload : {};
+  const out = {};
+  const forbidden = {
+    webhook_secret: true,
+    apps_script_webhook_secret: true,
+    smtp_password: true,
+    smtp_username: true,
+    api_key: true,
+    access_token: true,
+    refresh_token: true,
+    auth_header: true,
+    authorization: true,
+    Authorization: true,
+    bearer_token: true,
+    provider_secret: true,
+    client_secret: true,
+    private_key: true,
+    token: true,
+    pdf_bytes: true,
+    pdf_base64: true,
+    content_base64: true,
+    email_body: true,
+    drive_url: true,
+    public_url: true,
+    public_link: true,
+    settings: true,
+    provider_config: true,
+    credentials: true
+  };
+  Object.keys(src).forEach(function (key) {
+    if (forbidden[key]) return;
+    if (forbidden[String(key).toLowerCase()]) return;
+    out[key] = src[key];
+  });
+  return out;
+}
+
+/**
  * Extend routeRequest switch — call after handling confirmed actions,
  * or merge these cases into Router.js routeRequest().
  *

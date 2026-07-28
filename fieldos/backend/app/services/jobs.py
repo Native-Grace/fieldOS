@@ -354,13 +354,22 @@ class JobService:
         actor_identity: str,
         body: dict[str, Any],
     ) -> dict[str, Any]:
-        payload = {
-            **body,
-            "staff_id": staff_id,
-            "actor_staff_id": staff_id,
-            "actor_role": actor_role,
-            "actor_identity": actor_identity,
-        }
+        from app.core.roles import normalize_role, strip_client_role_fields
+
+        # Never trust client-supplied role — claims-derived actor_role wins.
+        payload = strip_client_role_fields(
+            {
+                **body,
+                "staff_id": staff_id,
+                "actor_staff_id": staff_id,
+                "actor_role": normalize_role(actor_role),
+                "actor_identity": actor_identity,
+            }
+        )
+        payload["staff_id"] = staff_id
+        payload["actor_staff_id"] = staff_id
+        payload["actor_role"] = normalize_role(actor_role)
+        payload["actor_identity"] = actor_identity
         for key in ("pdf_bytes", "pdf_base64", "drive_url", "public_url", "public_link"):
             payload.pop(key, None)
         if action != "upload_attachment":

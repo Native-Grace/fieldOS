@@ -243,7 +243,9 @@ def login(
         claims={
             "email": user["email"],
             "staff_name": user["staff_name"],
+            # Display role preserved for UI; authorisation always normalises.
             "role": user.get("role", "Field Staff"),
+            "role_display": user.get("role", "Field Staff"),
         },
         settings=settings,
     )
@@ -1071,13 +1073,17 @@ async def _delivery_call(
     service: JobService,
     body: dict,
 ) -> dict:
-    role = require_manager_or_admin(claims)
+    role = require_manager_or_admin(claims, endpoint=f"deliveries:{action}")
+    # Never trust client-supplied role fields — claims only.
+    from app.core.roles import strip_client_role_fields
+
+    safe_body = strip_client_role_fields(body)
     return await service.delivery_action(
         action,
         staff_id=str(claims["sub"]),
         actor_role=role,
         actor_identity=actor_identity(claims),
-        body=body,
+        body=safe_body,
     )
 
 

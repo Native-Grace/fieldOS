@@ -60,7 +60,7 @@ var FieldOSDocumentDelivery = {
 
   _actor: function (payload) {
     var p = payload || {};
-    var role = String(p.actor_role || p.role || "staff");
+    var role = fieldosDeliveryNormaliseRole_(p.actor_role || p.role || "staff");
     return {
       staff_id: String(p.actor_staff_id || p.staff_id || ""),
       role: role,
@@ -173,7 +173,13 @@ var FieldOSDocumentDelivery = {
     var actor = this._actor(payload);
     this._assertManager(actor);
     var p = payload || {};
+    this._rejectForbiddenPayload_(p);
     var profile = String(p.document_type || FIELDOS_PDF_PROFILES_.CLIENT_JOB_SUMMARY);
+    var jobSheetId = String(p.job_sheet_id || "").trim();
+    var reportBatchId = String(p.report_batch_id || "").trim();
+    if (!jobSheetId && !reportBatchId) {
+      throw new Error("Validation Error: Delivery requires report_batch_id or job_sheet_id.");
+    }
     var email = fieldosNormaliseDeliveryEmail_(p.recipient_email);
     if (email && !fieldosIsValidDeliveryEmail_(email)) {
       throw new Error("Validation Error: recipient_email is invalid.");
@@ -181,15 +187,15 @@ var FieldOSDocumentDelivery = {
     var preview = fieldosPreviewDeliveryEmail_({
       document_type: profile,
       recipient_email: email || "recipient@example.com",
-      job_sheet_id: p.job_sheet_id,
+      job_sheet_id: jobSheetId || reportBatchId,
       customer_name: p.customer_name,
       project_name: p.project_name
     });
     var deliveryId = DB.generateId("DLV");
     var row = {
       delivery_id: deliveryId,
-      report_batch_id: String(p.report_batch_id || ""),
-      job_sheet_id: String(p.job_sheet_id || ""),
+      report_batch_id: reportBatchId,
+      job_sheet_id: jobSheetId,
       completion_id: String(p.completion_id || ""),
       document_type: profile,
       recipient_type: String(p.recipient_type || "client"),
@@ -453,12 +459,25 @@ var FieldOSDocumentDelivery = {
       "authorization",
       "token",
       "access_token",
+      "refresh_token",
       "webhook_secret",
+      "apps_script_webhook_secret",
+      "smtp_password",
+      "smtp_username",
+      "api_key",
+      "client_secret",
+      "provider_secret",
+      "private_key",
+      "bearer_token",
+      "auth_header",
       "drive_url",
       "public_url",
       "public_link",
       "email_body",
-      "body"
+      "body",
+      "settings",
+      "provider_config",
+      "credentials"
     ];
     for (var i = 0; i < forbidden.length; i++) {
       if (Object.prototype.hasOwnProperty.call(p, forbidden[i]) && p[forbidden[i]] != null && p[forbidden[i]] !== "") {

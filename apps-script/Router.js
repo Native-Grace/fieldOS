@@ -20,8 +20,12 @@ function doPost(e) {
     const providedSecret = payload.webhook_secret;
     fieldosVerifyWebhookSecret_(providedSecret);
 
+    // Strip transport/auth secrets before any business handler sees the payload.
+    // webhook_secret authenticates the gateway only — never DocumentDelivery / reports.
+    const businessPayload = fieldosStripTransportSecrets_(payload);
+
     // Process Routing
-    const result = routeRequest(payload);
+    const result = routeRequest(businessPayload);
 
     if (result.data !== undefined) {
       return fieldosJsonResponse(

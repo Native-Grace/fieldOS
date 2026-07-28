@@ -18,6 +18,10 @@ from app.services.report_math import (
     TEMPLATE_VERSION as REPORT_TEMPLATE_VERSION,
     scrub_report_record,
 )
+from app.core.roles import is_manager_or_admin, normalize_role
+
+# Re-export for callers that imported role helpers from delivery_math.
+__all_role_helpers__ = (is_manager_or_admin, normalize_role)
 
 DELIVERY_TEMPLATE_VERSION = "3G.1"
 
@@ -196,11 +200,6 @@ DELIVERY_TRANSITIONS: dict[str, frozenset[str]] = {
     STATUS_CANCELLED: frozenset(),
     STATUS_SUPERSEDED: frozenset(),
 }
-
-
-def is_manager_or_admin(role: Any) -> bool:
-    r = str(role or "").strip().lower()
-    return r in {"manager", "admin", "administrator"}
 
 
 def normalise_email(value: Any) -> str:

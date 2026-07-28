@@ -163,16 +163,80 @@ test("audit payload sanitises secrets and omits pdf bytes", () => {
   assert.equal(cleaned.recipient_email, "a@b.com");
 });
 
-test("gateway and setup wire Phase 3G", () => {
+test("gateway strips webhook_secret before business handlers", () => {
   const gateway = fs.readFileSync(path.join(root, "FieldOSGateway.js"), "utf8");
+  const router = fs.readFileSync(path.join(root, "Router.js"), "utf8");
   const setup = fs.readFileSync(path.join(root, "Setup.js"), "utf8");
   const repos = fs.readFileSync(path.join(root, "Repositories.js"), "utf8");
   assert.match(gateway, /FieldOSDocumentDelivery/);
   assert.match(gateway, /update_delivery_draft/);
   assert.match(gateway, /record_delivery_outcome/);
+  assert.match(gateway, /fieldosStripTransportSecrets_/);
+  assert.match(router, /fieldosStripTransportSecrets_/);
+  assert.match(router, /businessPayload/);
   assert.match(setup, /migrateSchemaForDocumentDelivery/);
   assert.match(repos, /DocumentDeliveryRepository/);
   assert.match(repos, /JobAttachmentRepository/);
+
+  const code = gateway;
+  const context = { Config: { getWebhookSecret: () => "secret" } };
+  vm.createContext(context);
+  vm.runInContext(
+    `
+    ${code.slice(code.indexOf("function fieldosStripTransportSecrets_"), code.indexOf("function fieldosRouteRequest"))}
+    `,
+    context
+  );
+  const cleaned = context.fieldosStripTransportSecrets_({
+    action: "get_delivery",
+    delivery_id: "DLV-1",
+    actor_role: "manager",
+    webhook_secret: "secret",
+    smtp_password: "x",
+    api_key: "y",
+    pdf_bytes: "%PDF",
+  });
+  assert.equal(cleaned.delivery_id, "DLV-1");
+  assert.equal(cleaned.actor_role, "manager");
+  assert.equal(cleaned.webhook_secret, undefined);
+  assert.equal(cleaned.smtp_password, undefined);
+  assert.equal(cleaned.api_key, undefined);
+  assert.equal(cleaned.pdf_bytes, undefined);
+});
+
+test("DocumentDelivery normalises Manager/Admin actor_role", () => {
+  const ctx = loadModule();
+  const created = ctx.FieldOSDocumentDelivery.createDeliveryDraft({
+    actor_role: "Manager",
+    actor_staff_id: "STAFF-MGR001",
+    staff_id: "STAFF-MGR001",
+    document_type: "Client Job Summary",
+    recipient_email: "client@example.com",
+    job_sheet_id: "21759f5d",
+    delivery_method: "download_only",
+  });
+  assert.equal(created.data.delivery.job_sheet_id, "21759f5d");
+
+  const adminOk = ctx.FieldOSDocumentDelivery.getDelivery({
+    actor_role: "Admin",
+    actor_staff_id: "STAFF-MGR001",
+    staff_id: "STAFF-MGR001",
+    delivery_id: created.data.delivery.delivery_id,
+  });
+  assert.equal(adminOk.data.delivery.delivery_id, created.data.delivery.delivery_id);
+
+  assert.throws(
+    () =>
+      ctx.FieldOSDocumentDelivery.getDelivery({
+        actor_role: "Field Staff",
+        actor_staff_id: "STAFF-1",
+        delivery_id: created.data.delivery.delivery_id,
+      }),
+    /manager or admin/i
+  );
+
+  assert.equal(ctx.fieldosDeliveryNormaliseRole_(" Manager "), "manager");
+  assert.equal(ctx.fieldosDeliveryNormaliseRole_("Administrator"), "admin");
 });
 
 test("create delivery draft requires job or report id", () => {
