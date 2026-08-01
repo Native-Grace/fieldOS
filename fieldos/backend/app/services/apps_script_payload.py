@@ -216,3 +216,135 @@ def build_apps_script_delivery_payload(action: str, source: dict[str, Any] | Non
     )
     assert_no_forbidden_apps_script_keys(out, action=action)
     return out
+
+CREATE_JOB_FROM_RECORDING_ALLOWLIST = frozenset(
+    {
+        "recording_id",
+        "idempotency_key",
+        "payload_hash",
+        "staff_id",
+        "actor_staff_id",
+        "actor_role",
+        "created_by",
+        "created_by_name",
+        "job_fields",
+        "reviewed_job",
+        "transcript",
+        "recording_drive_file_id",
+        "recording_file_url",
+        "recording_name",
+        "duration_seconds",
+        "mime_type",
+        "source",
+        "extraction_confidence",
+        "changed_fields",
+        "model",
+        "provider",
+    }
+)
+
+
+def build_apps_script_create_job_from_recording_payload(source: dict[str, Any]) -> dict[str, Any]:
+    """Allowlisted create_job_sheet_from_recording body — no audio bytes/secrets."""
+    src = dict(source or {})
+    rejected = rejected_forbidden_key_names(src)
+    out: dict[str, Any] = {}
+    for key in sorted(CREATE_JOB_FROM_RECORDING_ALLOWLIST):
+        if key not in src:
+            continue
+        value = src[key]
+        if value is None:
+            continue
+        if key == "actor_role":
+            out[key] = normalize_role(str(value))
+            continue
+        out[key] = value
+    # Hard strip any audio/content keys that somehow slipped in.
+    for banned in ("pdf_bytes", "pdf_base64", "content_base64", "audio_bytes", "audio_base64", "file_bytes"):
+        out.pop(banned, None)
+    log_extra(
+        logger,
+        20,
+        "Apps Script create_job_from_recording payload built",
+        action="create_job_sheet_from_recording",
+        allowed_keys=sorted(out.keys()),
+        rejected_key_names=rejected,
+        payload_key_count=len(out),
+    )
+    assert_no_forbidden_apps_script_keys(out, action="create_job_sheet_from_recording")
+    return out
+
+
+CREATE_COMPLETED_JOB_SHEET_ALLOWLIST = frozenset(
+    {
+        "work_session_id",
+        "idempotency_key",
+        "payload_hash",
+        "staff_id",
+        "actor_staff_id",
+        "actor_role",
+        "created_by",
+        "created_by_name",
+        "job_fields",
+        "reviewed_job_sheet",
+        "recordings",
+        "aggregated_transcript",
+        "processing_type",
+    }
+)
+
+
+def build_apps_script_create_completed_job_sheet_payload(source: dict[str, Any]) -> dict[str, Any]:
+    """Allowlisted create_completed_job_sheet_from_recordings — no audio bytes."""
+    src = dict(source or {})
+    rejected = rejected_forbidden_key_names(src)
+    out: dict[str, Any] = {}
+    for key in sorted(CREATE_COMPLETED_JOB_SHEET_ALLOWLIST):
+        if key not in src:
+            continue
+        value = src[key]
+        if value is None:
+            continue
+        if key == "actor_role":
+            out[key] = normalize_role(str(value))
+            continue
+        if key == "recordings" and isinstance(value, list):
+            # Strip any accidental bytes from recording objects.
+            cleaned = []
+            for row in value:
+                if not isinstance(row, dict):
+                    continue
+                cleaned.append(
+                    {
+                        k: row[k]
+                        for k in (
+                            "recording_id",
+                            "recording_drive_file_id",
+                            "recording_file_url",
+                            "recording_name",
+                            "duration_seconds",
+                            "mime_type",
+                            "transcript",
+                            "sequence",
+                            "recorded_at",
+                            "source",
+                        )
+                        if k in row and row[k] is not None
+                    }
+                )
+            out[key] = cleaned
+            continue
+        out[key] = value
+    for banned in ("pdf_bytes", "pdf_base64", "content_base64", "audio_bytes", "audio_base64", "file_bytes"):
+        out.pop(banned, None)
+    log_extra(
+        logger,
+        20,
+        "Apps Script create_completed_job_sheet payload built",
+        action="create_completed_job_sheet_from_recordings",
+        allowed_keys=sorted(out.keys()),
+        rejected_key_names=rejected,
+        payload_key_count=len(out),
+    )
+    assert_no_forbidden_apps_script_keys(out, action="create_completed_job_sheet_from_recordings")
+    return out

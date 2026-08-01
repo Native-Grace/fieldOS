@@ -3,7 +3,7 @@ from io import BytesIO
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.core.config import Settings, get_settings
 from app.core.roles import actor_identity, is_manager_or_admin, normalize_role, require_manager_or_admin
@@ -33,6 +33,19 @@ from app.models.schemas import (
     FinancialSnapshotVersionRequest,
     HealthResponse,
     InvalidateRecordingRequest,
+    CreateJobFromRecordingRequest,
+    CreateJobFromRecordingResponse,
+    DailyWorkCreateJobSheetRequest,
+    DailyWorkCreateJobSheetResponse,
+    DailyWorkReturnToReviewRequest,
+    DailyWorkSessionCreateRequest,
+    DailyWorkSessionListResponse,
+    DailyWorkSessionOut,
+    DailyWorkSessionPatchRequest,
+    DailyWorkSessionResponse,
+    JobCreateMastersResponse,
+    NewJobDictationDraftOut,
+    NewJobDictationResponse,
     JobCompletionOut,
     JobCompletionResponse,
     JobDetailResponse,
@@ -323,6 +336,426 @@ async def jobs_for_review(
         days=day_count,
         data_mode=settings.data_mode,
         assumptions=service.assumptions(),
+    )
+
+
+def _new_job_dictation_service(settings: Settings, service: JobService):
+    from app.services.new_job_dictation import NewJobDictationService
+
+    apps = getattr(service.repo, "apps_script", None)
+    return NewJobDictationService(settings, repo=service.repo, apps_script=apps)
+
+
+@router.get("/jobs/from-recording/masters", response_model=JobCreateMastersResponse)
+async def job_from_recording_masters(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobCreateMastersResponse:
+    require_manager_or_admin(claims)
+    svc = _new_job_dictation_service(settings, service)
+    data = await svc.list_masters()
+    return JobCreateMastersResponse(
+        customers=data.get("customers") or [],
+        projects=data.get("projects") or [],
+        staff=data.get("staff") or [],
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post("/jobs/from-recording/uploads", response_model=NewJobDictationResponse)
+async def upload_new_job_recording(
+    file: UploadFile = File(...),
+    duration_seconds: float = Form(0),
+    source: str = Form("browser_recording"),
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> NewJobDictationResponse:
+    role = require_manager_or_admin(claims)
+    svc = _new_job_dictation_service(settings, service)
+    draft = await svc.upload(
+        file=file,
+        staff_id=str(claims["sub"]),
+        staff_name=str(claims.get("staff_name") or claims.get("name") or ""),
+        actor_role=role,
+        duration_seconds=duration_seconds,
+        source=source,
+    )
+    return NewJobDictationResponse(
+        draft=NewJobDictationDraftOut.model_validate(draft),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.get("/jobs/from-recording/{recording_id}", response_model=NewJobDictationResponse)
+async def get_new_job_recording(
+    recording_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> NewJobDictationResponse:
+    role = require_manager_or_admin(claims)
+    svc = _new_job_dictation_service(settings, service)
+    draft = svc.get(recording_id, actor_role=role)
+    return NewJobDictationResponse(
+        draft=NewJobDictationDraftOut.model_validate(draft),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post("/jobs/from-recording/{recording_id}/process", response_model=NewJobDictationResponse)
+async def process_new_job_recording(
+    recording_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> NewJobDictationResponse:
+    role = require_manager_or_admin(claims)
+    svc = _new_job_dictation_service(settings, service)
+    draft = await svc.process(
+        recording_id, staff_id=str(claims["sub"]), actor_role=role
+    )
+    return NewJobDictationResponse(
+        draft=NewJobDictationDraftOut.model_validate(draft),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post("/jobs/from-recording", response_model=CreateJobFromRecordingResponse)
+async def create_job_from_recording(
+    body: CreateJobFromRecordingRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> CreateJobFromRecordingResponse:
+    role = require_manager_or_admin(claims)
+    svc = _new_job_dictation_service(settings, service)
+    result = await svc.create_job(
+        recording_id=body.recording_id,
+        expected_processing_version=body.expected_processing_version,
+        job=body.job,
+        idempotency_key=body.idempotency_key,
+        staff_id=str(claims["sub"]),
+        staff_name=str(claims.get("staff_name") or claims.get("name") or ""),
+        actor_role=role,
+        create_another=body.create_another,
+    )
+    return CreateJobFromRecordingResponse(
+        job=result.get("job") or {},
+        recording_id=str(result.get("recording_id") or ""),
+        link=result.get("link"),
+        idempotent=bool(result.get("idempotent")),
+        draft=NewJobDictationDraftOut.model_validate(result.get("draft") or {}),
+        data_mode=settings.data_mode,
+    )
+
+
+def _daily_work_service(settings: Settings, service: JobService):
+    from app.services.daily_work import DailyWorkService
+
+    apps = getattr(service.repo, "apps_script", None)
+    return DailyWorkService(settings, repo=service.repo, apps_script=apps)
+
+
+@router.get("/daily-work-sessions/masters", response_model=JobCreateMastersResponse)
+async def daily_work_masters(
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> JobCreateMastersResponse:
+    _ = claims
+    svc = _daily_work_service(settings, service)
+    data = await svc.list_masters()
+    return JobCreateMastersResponse(
+        customers=data.get("customers") or [],
+        projects=data.get("projects") or [],
+        staff=data.get("staff") or [],
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post("/daily-work-sessions", response_model=DailyWorkSessionResponse)
+async def create_daily_work_session(
+    body: DailyWorkSessionCreateRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    session = svc.create_session(
+        staff_id=str(claims["sub"]),
+        staff_name=str(claims.get("staff_name") or claims.get("name") or ""),
+        actor_role=role,
+        body=body.model_dump(),
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.get("/daily-work-sessions", response_model=DailyWorkSessionListResponse)
+async def list_daily_work_sessions(
+    open_only: bool = Query(True),
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionListResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    items = svc.list_sessions(
+        staff_id=str(claims["sub"]), actor_role=role, open_only=open_only
+    )
+    return DailyWorkSessionListResponse(items=items, data_mode=settings.data_mode)
+
+
+@router.get("/daily-work-sessions/{work_session_id}", response_model=DailyWorkSessionResponse)
+async def get_daily_work_session(
+    work_session_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    session = svc.get_session(
+        work_session_id, staff_id=str(claims["sub"]), actor_role=role
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.patch("/daily-work-sessions/{work_session_id}", response_model=DailyWorkSessionResponse)
+async def patch_daily_work_session(
+    work_session_id: str,
+    body: DailyWorkSessionPatchRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    payload = body.model_dump(exclude_unset=True)
+    expected = payload.pop("expected_version", None)
+    session = svc.patch_session(
+        work_session_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        body=payload,
+        expected_version=expected,
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post(
+    "/daily-work-sessions/{work_session_id}/recordings",
+    response_model=DailyWorkSessionResponse,
+)
+async def upload_daily_work_recording(
+    work_session_id: str,
+    file: UploadFile = File(...),
+    duration_seconds: float = Form(0),
+    source: str = Form("browser_recording"),
+    recorded_at: str = Form(""),
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    session = await svc.upload_recording(
+        work_session_id,
+        file=file,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        duration_seconds=duration_seconds,
+        source=source,
+        recorded_at=recorded_at,
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.delete(
+    "/daily-work-sessions/{work_session_id}/recordings/{recording_id}",
+    response_model=DailyWorkSessionResponse,
+)
+async def delete_daily_work_recording(
+    work_session_id: str,
+    recording_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    session = svc.delete_recording(
+        work_session_id,
+        recording_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.get("/daily-work-sessions/{work_session_id}/recordings/{recording_id}/audio")
+async def get_daily_work_recording_audio(
+    work_session_id: str,
+    recording_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+):
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    path, mime, filename = svc.get_recording_audio(
+        work_session_id,
+        recording_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+    )
+    return FileResponse(
+        path,
+        media_type=mime,
+        filename=filename,
+        content_disposition_type="inline",
+    )
+
+
+@router.post(
+    "/daily-work-sessions/{work_session_id}/recordings/{recording_id}/process",
+    response_model=DailyWorkSessionResponse,
+)
+async def process_daily_work_recording(
+    work_session_id: str,
+    recording_id: str,
+    force: bool = Query(False),
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    session = await svc.process_recording(
+        work_session_id,
+        recording_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        force=force,
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post(
+    "/daily-work-sessions/{work_session_id}/process-all",
+    response_model=DailyWorkSessionResponse,
+)
+async def process_all_daily_work_recordings(
+    work_session_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    session = await svc.process_all(
+        work_session_id, staff_id=str(claims["sub"]), actor_role=role
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post(
+    "/daily-work-sessions/{work_session_id}/extract",
+    response_model=DailyWorkSessionResponse,
+)
+async def extract_daily_work_session(
+    work_session_id: str,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    session = await svc.extract(
+        work_session_id, staff_id=str(claims["sub"]), actor_role=role
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post(
+    "/daily-work-sessions/{work_session_id}/return-to-review",
+    response_model=DailyWorkSessionResponse,
+)
+async def return_daily_work_session_to_review(
+    work_session_id: str,
+    body: DailyWorkReturnToReviewRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkSessionResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    session = svc.return_to_review(
+        work_session_id,
+        staff_id=str(claims["sub"]),
+        actor_role=role,
+        expected_session_version=body.expected_session_version,
+    )
+    return DailyWorkSessionResponse(
+        session=DailyWorkSessionOut.model_validate(session),
+        data_mode=settings.data_mode,
+    )
+
+
+@router.post(
+    "/daily-work-sessions/{work_session_id}/create-job-sheet",
+    response_model=DailyWorkCreateJobSheetResponse,
+)
+async def create_daily_work_job_sheet(
+    work_session_id: str,
+    body: DailyWorkCreateJobSheetRequest,
+    claims: dict = Depends(get_current_claims),
+    settings: Settings = Depends(get_settings),
+    service: JobService = Depends(job_service),
+) -> DailyWorkCreateJobSheetResponse:
+    role = normalize_role(str(claims.get("role") or ""))
+    svc = _daily_work_service(settings, service)
+    result = await svc.create_job_sheet(
+        work_session_id,
+        staff_id=str(claims["sub"]),
+        staff_name=str(claims.get("staff_name") or claims.get("name") or ""),
+        actor_role=role,
+        expected_session_version=body.expected_session_version,
+        reviewed_job_sheet=body.reviewed_job_sheet,
+        idempotency_key=body.idempotency_key,
+    )
+    return DailyWorkCreateJobSheetResponse(
+        job=result.get("job") or {},
+        session=DailyWorkSessionOut.model_validate(result.get("session") or {}),
+        links=result.get("links") or [],
+        idempotent=bool(result.get("idempotent")),
+        data_mode=settings.data_mode,
     )
 
 
@@ -1098,6 +1531,10 @@ def _delivery_response(result: dict, settings: Settings, service: JobService) ->
         idempotent=result.get("idempotent"),
         confirm_required=result.get("confirm_required"),
         auto_send=result.get("auto_send"),
+        completion_status=result.get("completion_status"),
+        email=result.get("email") if isinstance(result.get("email"), dict) else None,
+        drive=result.get("drive") if isinstance(result.get("drive"), dict) else None,
+        email_result=result.get("email_result") if isinstance(result.get("email_result"), dict) else None,
         data_mode=settings.data_mode,
         assumptions=service.assumptions(),
     )

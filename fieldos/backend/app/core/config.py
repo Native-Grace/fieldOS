@@ -80,6 +80,18 @@ class Settings(BaseSettings):
     document_drive_root_folder_id: str = Field(default="", alias="DOCUMENT_DRIVE_ROOT_FOLDER_ID")
     max_attachment_mb: int = Field(default=15, alias="MAX_ATTACHMENT_MB")
 
+    # Create Job from Recording — staging + optional OpenAI (audio never via Apps Script).
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    new_job_dictations_dir: str = Field(
+        default="./data/new_job_dictations", alias="NEW_JOB_DICTATIONS_DIR"
+    )
+    # Daily Work Job Sheet — multi-recording completed-work sessions (separate from new_job_dictation).
+    daily_work_sessions_dir: str = Field(
+        default="./data/daily_work_sessions", alias="DAILY_WORK_SESSIONS_DIR"
+    )
+    daily_work_max_recordings: int = Field(default=40, alias="DAILY_WORK_MAX_RECORDINGS")
+    fieldos_timezone: str = Field(default="Australia/Sydney", alias="FIELDOS_TIMEZONE")
+
     @property
     def allowed_mimes(self) -> set[str]:
         return {m.strip().lower() for m in self.allowed_audio_mimes.split(",") if m.strip()}

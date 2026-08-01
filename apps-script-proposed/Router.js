@@ -126,6 +126,9 @@ function routeRequest(payload) {
     case "list_jobs_for_review":
     case "get_job_detail":
     case "register_recording":
+    case "list_job_create_masters":
+    case "create_job_sheet_from_recording":
+    case "create_completed_job_sheet_from_recordings":
     case "invalidate_recording":
     case "delete_recording":
     case "update_job_review":

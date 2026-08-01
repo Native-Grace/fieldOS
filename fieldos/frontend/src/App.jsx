@@ -7,6 +7,8 @@ import RecorderPage from "./pages/RecorderPage";
 import CompletionsDashboardPage from "./pages/CompletionsDashboardPage";
 import RatesFinancialPage from "./pages/RatesFinancialPage";
 import ReportsPage from "./pages/ReportsPage";
+import NewJobFromRecordingPage from "./pages/NewJobFromRecordingPage";
+import DailyWorkJobSheetPage from "./pages/DailyWorkJobSheetPage";
 
 function Private({ children }) {
   if (!getToken()) return <Navigate to="/login" replace />;
@@ -47,6 +49,22 @@ export default function App() {
           element={
             <Private>
               <ReportsPage />
+            </Private>
+          }
+        />
+        <Route
+          path="/jobs/new-from-recording"
+          element={
+            <Private>
+              <NewJobFromRecordingPage />
+            </Private>
+          }
+        />
+        <Route
+          path="/jobs/daily-work"
+          element={
+            <Private>
+              <DailyWorkJobSheetPage />
             </Private>
           }
         />

@@ -636,3 +636,144 @@ function migrateSchemaForDocumentDelivery() {
   ensureTable("tbl_job_attachments", attachmentHeaders);
   Logger.log("Phase 3G document delivery migration completed.");
 }
+
+/**
+ * Create Job from Recording — link + idempotency tables.
+ * Does not modify tbl_job_sheets headers.
+ */
+function migrateSchemaForCreateJobFromRecording() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (!spreadsheetId) {
+    throw new Error("Migration Error: 'SPREADSHEET_ID' script property is missing or blank in Project Settings.");
+  }
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+
+  const linkHeaders = [
+    "link_id",
+    "job_sheet_id",
+    "recording_id",
+    "transcript_id",
+    "created_at",
+    "created_by"
+  ];
+  const idempotencyHeaders = [
+    "idempotency_key",
+    "payload_hash",
+    "job_sheet_id",
+    "recording_id",
+    "created_by",
+    "created_at"
+  ];
+
+  function ensureTable(sheetName, columns) {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.getRange(1, 1, 1, columns.length).setValues([columns]);
+      sheet
+        .getRange(1, 1, 1, columns.length)
+        .setFontWeight("bold")
+        .setBackground("#f3f3f3")
+        .setHorizontalAlignment("left");
+      sheet.autoResizeColumns(1, columns.length);
+      Logger.log("Success [" + sheetName + "]: Created sheet with headers.");
+      return;
+    }
+    const lastCol = sheet.getLastColumn();
+    const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+    let nextCol = lastCol + 1;
+    columns.forEach(function (colName) {
+      if (headers.indexOf(colName) >= 0) {
+        Logger.log("Notice [" + sheetName + "]: '" + colName + "' already exists. Skipping.");
+        return;
+      }
+      const cell = sheet.getRange(1, nextCol);
+      cell.setValue(colName);
+      cell.setFontWeight("bold").setBackground("#f3f3f3").setHorizontalAlignment("left");
+      sheet.autoResizeColumns(nextCol, 1);
+      Logger.log("Success [" + sheetName + "]: Added column -> " + colName);
+      nextCol += 1;
+    });
+  }
+
+  ensureTable("tbl_job_recording_links", linkHeaders);
+  ensureTable("tbl_new_job_from_recording_keys", idempotencyHeaders);
+  Logger.log("Create Job from Recording migration completed.");
+}
+
+function migrateSchemaForDailyWorkSessions() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (!spreadsheetId) {
+    throw new Error("Migration Error: 'SPREADSHEET_ID' script property is missing or blank in Project Settings.");
+  }
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+
+  const sessionHeaders = [
+    "work_session_id",
+    "work_date",
+    "project_id",
+    "staff_ids",
+    "status",
+    "extraction_json_ref",
+    "created_at",
+    "created_by",
+    "updated_at",
+    "version",
+    "created_job_sheet_id"
+  ];
+  const idempotencyHeaders = [
+    "idempotency_key",
+    "payload_hash",
+    "job_sheet_id",
+    "work_session_id",
+    "created_by",
+    "created_at",
+    "links_json"
+  ];
+  const linkExtraHeaders = [
+    "link_id",
+    "job_sheet_id",
+    "recording_id",
+    "transcript_id",
+    "work_session_id",
+    "sequence",
+    "created_at",
+    "created_by"
+  ];
+
+  function ensureTable(sheetName, columns) {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.getRange(1, 1, 1, columns.length).setValues([columns]);
+      sheet
+        .getRange(1, 1, 1, columns.length)
+        .setFontWeight("bold")
+        .setBackground("#f3f3f3")
+        .setHorizontalAlignment("left");
+      sheet.autoResizeColumns(1, columns.length);
+      Logger.log("Success [" + sheetName + "]: Created sheet with headers.");
+      return;
+    }
+    const lastCol = sheet.getLastColumn();
+    const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+    let nextCol = lastCol + 1;
+    columns.forEach(function (colName) {
+      if (headers.indexOf(colName) >= 0) {
+        Logger.log("Notice [" + sheetName + "]: '" + colName + "' already exists. Skipping.");
+        return;
+      }
+      const cell = sheet.getRange(1, nextCol);
+      cell.setValue(colName);
+      cell.setFontWeight("bold").setBackground("#f3f3f3").setHorizontalAlignment("left");
+      sheet.autoResizeColumns(nextCol, 1);
+      Logger.log("Success [" + sheetName + "]: Added column -> " + colName);
+      nextCol += 1;
+    });
+  }
+
+  ensureTable("tbl_daily_work_sessions", sessionHeaders);
+  ensureTable("tbl_daily_work_create_keys", idempotencyHeaders);
+  ensureTable("tbl_job_recording_links", linkExtraHeaders);
+  Logger.log("Daily Work Job Sheet migration completed.");
+}

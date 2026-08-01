@@ -9,9 +9,12 @@ services:
       AUTH_USERS_FILE: /data/auth_users.json
       MOCK_DATA_DIR: /data/mock
       LOCAL_RECORDINGS_DIR: /data/recordings
+      DAILY_WORK_SESSIONS_DIR: ${DAILY_WORK_SESSIONS_DIR}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
       - fieldos_data:/data
       # Service account JSON for Drive uploads (create file locally; never commit it)
+      - ./data/daily-work-sessions:/app/data/daily-work-sessions
       - ./secrets/service-account.json:/app/secrets/service-account.json:ro
     ports:
       - "8000:8000"

@@ -433,6 +433,27 @@ class AppsScriptClient:
         safe_body = redact_secrets(body)
         return await self._post("register_recording", {**safe_body, **self._column_payload()})
 
+    async def list_job_create_masters(self, body: dict[str, Any]) -> dict[str, Any]:
+        safe_body = redact_secrets(body)
+        return await self._post("list_job_create_masters", {**safe_body, **self._column_payload()})
+
+    async def create_job_sheet_from_recording(self, body: dict[str, Any]) -> dict[str, Any]:
+        from app.services.apps_script_payload import build_apps_script_create_job_from_recording_payload
+
+        safe_body = build_apps_script_create_job_from_recording_payload(body)
+        return await self._post(
+            "create_job_sheet_from_recording", {**safe_body, **self._column_payload()}
+        )
+
+    async def create_completed_job_sheet_from_recordings(self, body: dict[str, Any]) -> dict[str, Any]:
+        from app.services.apps_script_payload import build_apps_script_create_completed_job_sheet_payload
+
+        safe_body = build_apps_script_create_completed_job_sheet_payload(body)
+        return await self._post(
+            "create_completed_job_sheet_from_recordings",
+            {**safe_body, **self._column_payload()},
+        )
+
     async def invalidate_recording(self, body: dict[str, Any]) -> dict[str, Any]:
         safe_body = redact_secrets(body)
         return await self._post("invalidate_recording", {**safe_body, **self._column_payload()})

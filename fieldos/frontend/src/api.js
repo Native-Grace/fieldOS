@@ -239,3 +239,33 @@ export function uploadRecording(
     xhr.send(form);
   });
 }
+
+/** Generic multipart upload with progress (Create Job from Recording, etc.). */
+export function uploadForm(path, formData, { onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/v1${path}`);
+    const token = getToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      let body = null;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        body = { message: xhr.responseText };
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+      else {
+        const detail = body.detail || body.message || `Upload failed (${xhr.status})`;
+        reject(new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), xhr.status));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.send(formData);
+  });
+}

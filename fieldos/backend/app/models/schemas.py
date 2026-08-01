@@ -320,6 +320,140 @@ class ProcessRequest(BaseModel):
     force_reprocess: bool = False
 
 
+class CreateJobFromRecordingRequest(BaseModel):
+    recording_id: str = Field(min_length=1, max_length=80)
+    expected_processing_version: int = Field(ge=1)
+    job: dict = Field(default_factory=dict)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    create_another: bool = False
+
+
+class NewJobDictationDraftOut(BaseModel):
+    recording_id: str
+    source: str = ""
+    status: str = ""
+    filename: str = ""
+    mime_type: str = ""
+    byte_size: int = 0
+    duration_seconds: float = 0
+    recording_drive_file_id: str = ""
+    recording_file_url: str = ""
+    created_by: str = ""
+    created_by_name: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    updated_at: Optional[Union[datetime, str]] = None
+    processing_version: int = 1
+    processing_type: str = "new_job_dictation"
+    transcript: str = ""
+    extraction: dict = Field(default_factory=dict)
+    match_report: dict = Field(default_factory=dict)
+    job_sheet_id: str = ""
+    failure_reason: str = ""
+    reviewed_by: str = ""
+    created_job_by: str = ""
+
+
+class NewJobDictationResponse(BaseModel):
+    draft: NewJobDictationDraftOut
+    data_mode: str = ""
+
+
+class CreateJobFromRecordingResponse(BaseModel):
+    job: dict
+    recording_id: str
+    link: Optional[dict] = None
+    idempotent: bool = False
+    draft: NewJobDictationDraftOut
+    data_mode: str = ""
+
+
+class JobCreateMastersResponse(BaseModel):
+    customers: List[dict] = Field(default_factory=list)
+    projects: List[dict] = Field(default_factory=list)
+    staff: List[dict] = Field(default_factory=list)
+    data_mode: str = ""
+
+
+class DailyWorkSessionCreateRequest(BaseModel):
+    work_date: str = ""
+    staff_ids: List[str] = Field(default_factory=list)
+    staff_names: List[str] = Field(default_factory=list)
+    project_id: str = ""
+    project_name: str = ""
+    customer_name: str = ""
+    site_address: str = ""
+    starting_note: str = ""
+
+
+class DailyWorkSessionPatchRequest(BaseModel):
+    expected_version: Optional[int] = None
+    work_date: Optional[str] = None
+    staff_ids: Optional[List[str]] = None
+    staff_names: Optional[List[str]] = None
+    project_id: Optional[str] = None
+    project_name: Optional[str] = None
+    customer_name: Optional[str] = None
+    site_address: Optional[str] = None
+    starting_note: Optional[str] = None
+    reviewed_job_sheet: Optional[dict] = None
+
+
+class DailyWorkCreateJobSheetRequest(BaseModel):
+    expected_session_version: int = Field(ge=1)
+    reviewed_job_sheet: dict = Field(default_factory=dict)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class DailyWorkReturnToReviewRequest(BaseModel):
+    expected_session_version: int = Field(ge=1)
+
+
+class DailyWorkSessionOut(BaseModel):
+    work_session_id: str
+    work_date: str = ""
+    project_id: str = ""
+    project_name: str = ""
+    customer_name: str = ""
+    staff_ids: List[str] = Field(default_factory=list)
+    staff_names: List[str] = Field(default_factory=list)
+    status: str = ""
+    recording_count: int = 0
+    created_by: str = ""
+    created_at: Optional[Union[datetime, str]] = None
+    updated_at: Optional[Union[datetime, str]] = None
+    version: int = 1
+    created_job_sheet_id: str = ""
+    site_address: str = ""
+    starting_note: str = ""
+    recordings: List[dict] = Field(default_factory=list)
+    extraction: dict = Field(default_factory=dict)
+    failure_reason: str = ""
+    create_failure_reason: str = ""
+    create_failure_code: str = ""
+    last_create_idempotency_key: str = ""
+    processing_type: str = "daily_work_dictation"
+    job_created: bool = False
+    notice: str = ""
+
+
+class DailyWorkSessionResponse(BaseModel):
+    session: DailyWorkSessionOut
+    data_mode: str = ""
+
+
+class DailyWorkSessionListResponse(BaseModel):
+    items: List[dict] = Field(default_factory=list)
+    data_mode: str = ""
+
+
+class DailyWorkCreateJobSheetResponse(BaseModel):
+    job: dict
+    session: DailyWorkSessionOut
+    links: List[dict] = Field(default_factory=list)
+    idempotent: bool = False
+    data_mode: str = ""
+
+
 class ProcessResponse(BaseModel):
     status: str
     action: str

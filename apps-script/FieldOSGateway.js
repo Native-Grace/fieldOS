@@ -102,6 +102,12 @@ function fieldosRouteRequest(payload) {
       return FieldOSGateway.getJobDetail(payload);
     case "register_recording":
       return FieldOSGateway.registerRecording(payload);
+    case "list_job_create_masters":
+      return fieldosListJobCreateMasters_(payload);
+    case "create_job_sheet_from_recording":
+      return fieldosCreateJobSheetFromRecording_(payload);
+    case "create_completed_job_sheet_from_recordings":
+      return fieldosCreateCompletedJobSheetFromRecordings_(payload);
     case "invalidate_recording":
       return FieldOSGateway.invalidateRecording(payload);
     case "delete_recording":

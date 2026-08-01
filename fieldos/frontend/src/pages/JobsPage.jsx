@@ -11,6 +11,8 @@ import {
   normalizeJobsDays,
   saveJobsDays,
 } from "../jobsRange";
+import { canShowNewJobFromRecording } from "../newJobFromRecordingHelpers.mjs";
+import { canShowDailyWorkJobSheet } from "../dailyWorkHelpers.mjs";
 
 function statusClass(status) {
   const s = (status || "").toLowerCase();
@@ -79,6 +81,33 @@ export default function JobsPage() {
           </p>
         </div>
         <div className="topbar-actions">
+          {canShowDailyWorkJobSheet(staff?.role) && (
+            <Link
+              className="btn btn-primary"
+              style={{ width: "auto", textDecoration: "none" }}
+              to="/jobs/daily-work"
+            >
+              Record Today&apos;s Work
+            </Link>
+          )}
+          {canShowDailyWorkJobSheet(staff?.role) && (
+            <Link
+              className="btn btn-ghost"
+              style={{ width: "auto", textDecoration: "none" }}
+              to="/jobs/daily-work"
+            >
+              Daily Work Job Sheet
+            </Link>
+          )}
+          {canShowNewJobFromRecording(staff?.role) && (
+            <Link
+              className="btn"
+              style={{ width: "auto", textDecoration: "none" }}
+              to="/jobs/new-from-recording"
+            >
+              New Job from Recording
+            </Link>
+          )}
           {manager && (
             <Link className="btn btn-ghost" style={{ width: "auto", textDecoration: "none" }} to="/completions">
               Completions
