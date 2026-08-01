@@ -265,9 +265,9 @@ function fieldosRouteRequest(payload) {
  * Enrich Utils.createJsonResponse with optional data object.
  * If merging into production, prefer adding data support to Utils once.
  *
- * For create_completed_job_sheet_from_recordings, promotes job_sheet_id / job /
- * idempotent onto the top-level envelope so FastAPI can resolve IDs without
- * depending only on nested data.
+ * Promotes job_sheet_id / idempotent for compact create/generate envelopes.
+ * Prefer data.completion_id as record_id when present (completion drafts).
+ * Does NOT promote full job or links arrays (keeps ContentService payload small).
  */
 function fieldosJsonResponse(status, action, message, recordId, data) {
   const response = {
@@ -277,25 +277,22 @@ function fieldosJsonResponse(status, action, message, recordId, data) {
     record_id: recordId || null,
     timestamp: new Date().toISOString()
   };
-  if (recordId) {
-    response.job_sheet_id = recordId;
-  }
   if (data !== undefined) {
     response.data = data;
     if (data && typeof data === "object" && !Array.isArray(data)) {
-      if (data.job && typeof data.job === "object") {
-        response.job = data.job;
-      }
       if (typeof data.idempotent === "boolean") {
         response.idempotent = data.idempotent;
       }
-      if (Array.isArray(data.links)) {
-        response.links = data.links;
-      }
-      if (!response.job_sheet_id && data.job_sheet_id) {
+      if (data.job_sheet_id) {
         response.job_sheet_id = data.job_sheet_id;
       }
+      if (data.completion_id) {
+        response.record_id = data.completion_id;
+      }
     }
+  }
+  if (!response.job_sheet_id && recordId) {
+    response.job_sheet_id = recordId;
   }
   return ContentService.createTextOutput(JSON.stringify(response))
     .setMimeType(ContentService.MimeType.JSON);

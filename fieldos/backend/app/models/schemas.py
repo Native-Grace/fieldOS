@@ -450,6 +450,7 @@ class DailyWorkCreateJobSheetResponse(BaseModel):
     job: dict
     session: DailyWorkSessionOut
     links: List[dict] = Field(default_factory=list)
+    link_count: int = 0
     idempotent: bool = False
     data_mode: str = ""
 

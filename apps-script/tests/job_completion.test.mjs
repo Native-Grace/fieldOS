@@ -64,6 +64,11 @@ function loadCompletion(harness) {
         return fn();
       },
     },
+    SpreadsheetApp: {
+      flush() {
+        harness.flushCalls = (harness.flushCalls || 0) + 1;
+      },
+    },
     DB: {
       generateId(prefix) {
         harness.idSeq += 1;
@@ -230,14 +235,62 @@ test("approved job required and max one active completion", () => {
   );
 });
 
-test("generate draft + staff mutation rejected + audit sanitised", () => {
+test("generate draft returns minimal payload under 5KB and flushes", () => {
   const h = harness();
+  h.flushCalls = 0;
   const ctx = loadCompletion(h);
   const out = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
     job_sheet_id: "21759f5d",
     actor_role: "manager",
     staff_id: "STAFF-MGR001",
     actor_identity: "manager@nativegrace.com",
+  });
+  assert.equal(out.message, "Completion draft generated");
+  assert.ok(out.data.completion_id);
+  assert.equal(out.data.job_sheet_id, "21759f5d");
+  assert.equal(out.data.status, "Draft");
+  assert.equal(out.data.generated, true);
+  assert.equal(typeof out.data.labour_count, "number");
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "completion"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "labour_entries"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "machinery_entries"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "material_entries"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "job"), false);
+  const blob = JSON.stringify(out);
+  assert.ok(Buffer.byteLength(blob, "utf8") < 5 * 1024);
+  assert.ok(Buffer.byteLength(blob, "utf8") < 1024);
+  assert.equal(blob.includes("ai_transcript"), false);
+  assert.equal(blob.includes("Had lunch"), false);
+  assert.equal(h.flushCalls, 1);
+  // Rows persisted before response.
+  assert.ok(h.tables.tbl_job_completions.length >= 1);
+  assert.equal(h.tables.tbl_job_completions[0].completion_id, out.data.completion_id);
+  assert.ok(h.tables.tbl_job_labour.length >= 1);
+
+  // Full payload available via get — not generate.
+  const loaded = ctx.FieldOSJobCompletion.getJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  }).data;
+  assert.equal(loaded.completion.completion_id, out.data.completion_id);
+  assert.ok(loaded.labour_entries.length >= 1);
+});
+
+test("generate draft + staff mutation rejected + audit sanitised", () => {
+  const h = harness();
+  const ctx = loadCompletion(h);
+  const gen = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+    actor_identity: "manager@nativegrace.com",
+  });
+  assert.ok(gen.data.completion_id);
+  const out = ctx.FieldOSJobCompletion.getJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
   });
   assert.equal(out.data.completion.completion_status, "Draft");
   assert.ok(out.data.labour_entries.length >= 1);
@@ -260,11 +313,16 @@ test("generate draft + staff mutation rejected + audit sanitised", () => {
 test("stale version rejected and finalise/reopen flow", () => {
   const h = harness();
   const ctx = loadCompletion(h);
-  let data = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+  ctx.FieldOSJobCompletion.generateJobCompletionDraft({
     job_sheet_id: "21759f5d",
     actor_role: "manager",
     staff_id: "STAFF-MGR001",
     actor_identity: "mgr",
+  });
+  let data = ctx.FieldOSJobCompletion.getJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
   }).data;
 
   assert.throws(
@@ -479,7 +537,12 @@ test("invalid arithmetic cannot be overridden", () => {
 test("finalisation blocked when suggested rows remain", () => {
   const h = harness();
   const ctx = loadCompletion(h);
-  const data = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+  ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  });
+  const data = ctx.FieldOSJobCompletion.getJobCompletion({
     job_sheet_id: "21759f5d",
     actor_role: "manager",
     staff_id: "STAFF-MGR001",
@@ -536,7 +599,12 @@ test("spreadsheet timezone stability: local 07:00 does not shift to UTC hour", (
 test("read -> api -> save -> read round trip keeps canonical HH:MM", () => {
   const h = harness();
   const ctx = loadCompletion(h);
-  let data = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+  ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  });
+  let data = ctx.FieldOSJobCompletion.getJobCompletion({
     job_sheet_id: "21759f5d",
     actor_role: "manager",
     staff_id: "STAFF-MGR001",
@@ -590,7 +658,12 @@ test("read -> api -> save -> read round trip keeps canonical HH:MM", () => {
 test("finalisation succeeds with canonical times after Sheets Date coercion", () => {
   const h = harness();
   const ctx = loadCompletion(h);
-  let data = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+  ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  });
+  let data = ctx.FieldOSJobCompletion.getJobCompletion({
     job_sheet_id: "21759f5d",
     actor_role: "manager",
     staff_id: "STAFF-MGR001",

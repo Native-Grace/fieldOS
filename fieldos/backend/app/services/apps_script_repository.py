@@ -9,8 +9,11 @@ from typing import Any
 from fastapi import HTTPException
 
 from app.core.config import Settings
+from app.core.logging import get_logger, log_extra
 from app.services.apps_script import AppsScriptClient, AppsScriptError
 from app.services.drive_upload import delete_drive_file, upload_recording_to_drive
+
+logger = get_logger(__name__)
 
 APPS_SCRIPT_ASSUMPTIONS = [
     "DATA_MODE=apps_script reads/writes via Apps Script gateway actions (list/detail/register/process).",
@@ -245,6 +248,88 @@ class AppsScriptJobRepository:
             "can_generate": bool(data.get("can_generate")),
         }
 
+    @staticmethod
+    def _resolve_generate_completion_id(result: dict[str, Any]) -> str:
+        """Parse completion_id from minimal generate envelope (no full completion required)."""
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        for candidate in (
+            data.get("completion_id"),
+            result.get("completion_id"),
+            result.get("record_id"),
+        ):
+            value = str(candidate or "").strip()
+            if value:
+                return value
+        completion = data.get("completion") if isinstance(data.get("completion"), dict) else {}
+        return str(completion.get("completion_id") or "").strip()
+
+    async def _load_completion_after_generate(
+        self, body: dict[str, Any], *, generate_result: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        job_sheet_id = str(body.get("job_sheet_id") or "").strip()
+        staff_id = str(body.get("staff_id") or body.get("actor_staff_id") or "").strip()
+        actor_role = str(body.get("actor_role") or "staff").strip()
+        if not job_sheet_id:
+            raise HTTPException(status_code=422, detail="job_sheet_id is required.")
+        # Prefer full get — generate response is intentionally minimal.
+        loaded = await self.aget_job_completion(job_sheet_id, staff_id, actor_role)
+        if isinstance(loaded.get("completion"), dict) and loaded["completion"].get("completion_id"):
+            return loaded
+        # Legacy generate that still returns a full assemble payload.
+        if generate_result:
+            data = (
+                generate_result.get("data")
+                if isinstance(generate_result.get("data"), dict)
+                else {}
+            )
+            if isinstance(data.get("completion"), dict) and data["completion"].get("completion_id"):
+                return self._completion_payload(data)
+        raise HTTPException(
+            status_code=502,
+            detail="Generate succeeded but completion draft could not be loaded.",
+        )
+
+    async def _reconcile_generate_completion(
+        self, body: dict[str, Any], *, error: AppsScriptError
+    ) -> dict[str, Any] | None:
+        """If generate POST may have persisted, load via get — never re-POST generate."""
+        code = str(getattr(error, "code", "") or "")
+        message = str(error).lower()
+        transportish = code.startswith("apps_script_") or any(
+            token in message
+            for token in (
+                "redirect",
+                "html instead of json",
+                "invalid apps script",
+                "timed out",
+                "unreachable",
+                "expired",
+            )
+        )
+        if not transportish:
+            return None
+        job_sheet_id = str(body.get("job_sheet_id") or "").strip()
+        staff_id = str(body.get("staff_id") or body.get("actor_staff_id") or "").strip()
+        actor_role = str(body.get("actor_role") or "staff").strip()
+        if not job_sheet_id:
+            return None
+        try:
+            loaded = await self.aget_job_completion(job_sheet_id, staff_id, actor_role)
+        except Exception:
+            return None
+        completion = loaded.get("completion") if isinstance(loaded.get("completion"), dict) else None
+        if completion and str(completion.get("completion_id") or "").strip():
+            log_extra(
+                logger,
+                20,
+                "Job completion generate reconciled via get",
+                job_sheet_id=job_sheet_id,
+                completion_id=str(completion.get("completion_id") or ""),
+                apps_error_code=code or None,
+            )
+            return loaded
+        return None
+
     async def aget_job_completion(
         self, job_sheet_id: str, staff_id: str, actor_role: str
     ) -> dict[str, Any]:
@@ -434,6 +519,10 @@ class AppsScriptJobRepository:
                 result = await self.apps_script.create_job_completion_draft(body)
             elif action == "generate_job_completion_draft":
                 result = await self.apps_script.generate_job_completion_draft(body)
+                # Minimal generate envelope — always reload via get (never re-POST generate).
+                return await self._load_completion_after_generate(
+                    body, generate_result=result
+                )
             elif action == "update_job_completion":
                 result = await self.apps_script.update_job_completion(body)
             elif action == "finalise_job_completion":
@@ -443,6 +532,10 @@ class AppsScriptJobRepository:
             else:
                 raise HTTPException(status_code=400, detail=f"Unknown completion action: {action}")
         except AppsScriptError as exc:
+            if action == "generate_job_completion_draft":
+                reconciled = await self._reconcile_generate_completion(body, error=exc)
+                if reconciled is not None:
+                    return reconciled
             _raise_from_apps(exc)
             raise
         data = result.get("data") if isinstance(result.get("data"), dict) else {}

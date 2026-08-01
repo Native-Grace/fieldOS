@@ -49,7 +49,7 @@ def _login(client: TestClient) -> str:
 
 
 EXEC_URL = "https://script.google.com/macros/s/fake/exec"
-USERCONTENT_URL = "https://script.googleusercontent.com/macros/echo?user_content_key=abc"
+USERCONTENT_URL = "https://script.googleusercontent.com/macros/echo?user_content_key=abc&lib=xyz"
 _RealAsyncClient = httpx.AsyncClient
 
 
@@ -75,19 +75,22 @@ def _patch_async_client(return_values):
         return item
 
     mock_instance.post = AsyncMock(side_effect=_post)
+    mock_instance.get = AsyncMock(
+        side_effect=AssertionError("GET should not be called for direct 200 JSON responses")
+    )
 
     def _factory(*_args, **kwargs):
-        assert kwargs.get("follow_redirects") is True
+        assert kwargs.get("follow_redirects") is False
         return mock_instance
 
     return patch("app.services.apps_script.httpx.AsyncClient", side_effect=_factory)
 
 
 def _patch_async_client_transport(handler):
-    """Use real httpx.AsyncClient + MockTransport so redirects are followed."""
+    """Use real httpx.AsyncClient + MockTransport with follow_redirects=False."""
 
     def _factory(*args, **kwargs):
-        assert kwargs.get("follow_redirects") is True
+        assert kwargs.get("follow_redirects") is False
         kwargs = {**kwargs, "transport": httpx.MockTransport(handler)}
         return _RealAsyncClient(*args, **kwargs)
 
@@ -357,13 +360,13 @@ def test_apps_script_list_jobs_blank_customer_and_missing_optional(apps_script_e
 
 
 def test_apps_script_follows_usercontent_redirect(apps_script_env: TestClient) -> None:
-    """Google ContentService: script.google.com 302 → googleusercontent JSON 200."""
+    """Google ContentService: script.google.com 302 → GET googleusercontent JSON 200."""
     token = _login(apps_script_env)
     payload = _list_jobs_success_payload("JS-REDIR001")
-    seen_hosts: list[str] = []
+    seen: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen_hosts.append(request.url.host)
+        seen.append((request.method, request.url.host))
         if request.url.host == "script.google.com":
             body = request.content.decode("utf-8", errors="replace")
             assert "test-webhook-secret" in body  # secret sent on initial POST only
@@ -374,6 +377,10 @@ def test_apps_script_follows_usercontent_redirect(apps_script_env: TestClient) -
                 request=request,
             )
         if request.url.host == "script.googleusercontent.com":
+            assert request.method == "GET"
+            assert "user_content_key=abc" in str(request.url)
+            assert "lib=xyz" in str(request.url)
+            assert request.content in (b"", None) or len(request.content) == 0
             return httpx.Response(200, json=payload, request=request)
         return httpx.Response(404, text="unexpected host", request=request)
 
@@ -384,7 +391,10 @@ def test_apps_script_follows_usercontent_redirect(apps_script_env: TestClient) -
         )
     assert resp.status_code == 200, resp.text
     assert resp.json()["items"][0]["job_sheet_id"] == "JS-REDIR001"
-    assert seen_hosts == ["script.google.com", "script.googleusercontent.com"]
+    assert seen == [
+        ("POST", "script.google.com"),
+        ("GET", "script.googleusercontent.com"),
+    ]
     assert "test-webhook-secret" not in resp.text
 
 
@@ -408,9 +418,16 @@ def test_apps_script_redirect_loop(apps_script_env: TestClient) -> None:
     token = _login(apps_script_env)
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # Loop on googleusercontent — host allowed but URL repeats.
+        if request.url.host == "script.google.com":
+            return httpx.Response(
+                302,
+                headers={"Location": USERCONTENT_URL},
+                request=request,
+            )
         return httpx.Response(
             302,
-            headers={"Location": str(request.url)},
+            headers={"Location": USERCONTENT_URL},
             request=request,
         )
 
@@ -424,6 +441,47 @@ def test_apps_script_redirect_loop(apps_script_env: TestClient) -> None:
     assert "test-webhook-secret" not in resp.text
 
 
+def test_apps_script_redirect_host_rejected(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Classic failure mode: chase back to /exec HTML via generic redirect follow.
+        return httpx.Response(
+            302,
+            headers={"Location": EXEC_URL},
+            request=request,
+        )
+
+    with _patch_async_client_transport(handler):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 502
+    assert "rejected" in resp.json()["detail"].lower()
+
+
+def test_apps_script_redirect_expired_404(apps_script_env: TestClient) -> None:
+    token = _login(apps_script_env)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "script.google.com":
+            return httpx.Response(
+                302,
+                headers={"Location": USERCONTENT_URL},
+                request=request,
+            )
+        return httpx.Response(404, text="Not Found", request=request)
+
+    with _patch_async_client_transport(handler):
+        resp = apps_script_env.get(
+            "/api/v1/jobs/mine",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 502
+    assert "expired" in resp.json()["detail"].lower()
+
+
 def test_apps_script_redirect_to_non_json(apps_script_env: TestClient) -> None:
     token = _login(apps_script_env)
 
@@ -434,7 +492,12 @@ def test_apps_script_redirect_to_non_json(apps_script_env: TestClient) -> None:
                 headers={"Location": USERCONTENT_URL},
                 request=request,
             )
-        return httpx.Response(200, text="<html>oops</html>", request=request)
+        return httpx.Response(
+            200,
+            text="<html>oops</html>",
+            headers={"content-type": "text/html"},
+            request=request,
+        )
 
     with _patch_async_client_transport(handler):
         resp = apps_script_env.get(
@@ -442,9 +505,9 @@ def test_apps_script_redirect_to_non_json(apps_script_env: TestClient) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
     assert resp.status_code == 502
-    assert "Invalid Apps Script response" in resp.json()["detail"]
+    detail = resp.json()["detail"].lower()
+    assert "html" in detail or "invalid" in detail
     assert "test-webhook-secret" not in resp.text
-
 
 def test_apps_script_invalid_response(apps_script_env: TestClient) -> None:
     token = _login(apps_script_env)

@@ -4,11 +4,12 @@
  * Separate from create_job_sheet_from_recording (future/scheduled work).
  * Audio bytes never accepted — Drive file ids + metadata only.
  *
- * Response contract (Router wraps into status/record_id/data; also promotes IDs):
+ * Success contract (Router → fieldosJsonResponse):
  * {
  *   action, message, job_sheet_id,
- *   data: { job_sheet_id, record_id, job, links, idempotent }
+ *   data: { job_sheet_id, record_id, work_session_id, idempotent, link_count }
  * }
+ * Never return transcripts, reviewed_job_sheet, full job rows, or link arrays.
  */
 
 var FIELDOS_CREATE_COMPLETED_JOB_ALLOWLIST_ = {
@@ -64,18 +65,50 @@ function fieldosPickCreateCompletedJobPayload_(body) {
   return out;
 }
 
+function fieldosFlushSheetsSafe_() {
+  try {
+    if (typeof SpreadsheetApp !== "undefined" && SpreadsheetApp.flush) {
+      SpreadsheetApp.flush();
+    }
+  } catch (e) {
+    // Non-fatal — best-effort persistence before ContentService return.
+  }
+}
+
+function fieldosLogCreateCompletedResponse_(meta) {
+  try {
+    const payload = {
+      action: "create_completed_job_sheet_from_recordings",
+      work_session_id: String((meta && meta.work_session_id) || ""),
+      job_sheet_id: String((meta && meta.job_sheet_id) || ""),
+      idempotent: !!(meta && meta.idempotent),
+      response_bytes: Number((meta && meta.response_bytes) || 0),
+      elapsed_ms: Number((meta && meta.elapsed_ms) || 0),
+      link_count: Number((meta && meta.link_count) || 0)
+    };
+    if (typeof Logger !== "undefined" && Logger.log) {
+      Logger.log(JSON.stringify(payload));
+    } else if (typeof console !== "undefined" && console.log) {
+      console.log(JSON.stringify(payload));
+    }
+  } catch (e) {
+    // Never fail create on logging.
+  }
+}
+
 /**
- * Router-compatible success payload. Must include job_sheet_id + data so doPost
- * uses fieldosJsonResponse and does not drop the job object.
+ * Minimal Router-compatible success payload.
+ * Must include job_sheet_id + data so doPost uses fieldosJsonResponse.
+ * Do NOT attach job / links / transcripts / headers.
  */
 function fieldosCompletedJobCreateRouterResult_(opts) {
   const jobSheetId = String((opts && opts.job_sheet_id) || "").trim();
   if (!jobSheetId) {
     throw new Error("Create Error: job_sheet_id missing from completed-job result.");
   }
-  const job = (opts && opts.job) || { job_sheet_id: jobSheetId };
-  if (!job.job_sheet_id) job.job_sheet_id = jobSheetId;
+  const workSessionId = String((opts && opts.work_session_id) || "").trim();
   const idempotent = !!(opts && opts.idempotent);
+  const linkCount = Number((opts && opts.link_count) || 0);
   const message =
     (opts && opts.message) ||
     (idempotent
@@ -88,11 +121,9 @@ function fieldosCompletedJobCreateRouterResult_(opts) {
     data: {
       job_sheet_id: jobSheetId,
       record_id: jobSheetId,
-      job: job,
-      links: (opts && opts.links) || [],
+      work_session_id: workSessionId,
       idempotent: idempotent,
-      headers: (opts && opts.headers) || [],
-      missing_job_fields: (opts && opts.missing_job_fields) || []
+      link_count: linkCount
     }
   };
 }
@@ -100,9 +131,10 @@ function fieldosCompletedJobCreateRouterResult_(opts) {
 /**
  * Create one completed job sheet from a reviewed daily-work session.
  * @param {object} body
- * @returns {object} Router-compatible result with job_sheet_id + data.job
+ * @returns {object} Minimal Router-compatible result
  */
 function fieldosCreateCompletedJobSheetFromRecordings_(body) {
+  const startedMs = Date.now();
   fieldosAssertStaffOrManager_(body);
   const safe = fieldosPickCreateCompletedJobPayload_(body);
   const idempotencyKey = String(safe.idempotency_key || "").trim();
@@ -133,26 +165,31 @@ function fieldosCreateCompletedJobSheetFromRecordings_(body) {
       if (!existingId) {
         throw new Error("Conflict: idempotent create-key row missing job_sheet_id.");
       }
-      let job = JobSheetRepository.findById(existingId);
-      if (!job) {
-        job = { job_sheet_id: existingId };
-      }
-      let links = existing.links || [];
-      if (typeof existing.links_json === "string" && existing.links_json && !links.length) {
+      let linkCount = Number(existing.link_count || 0);
+      if (!linkCount && typeof existing.links_json === "string" && existing.links_json) {
         try {
-          links = JSON.parse(existing.links_json) || [];
+          const parsed = JSON.parse(existing.links_json) || [];
+          linkCount = Array.isArray(parsed) ? parsed.length : 0;
         } catch (e) {
-          links = [];
+          linkCount = 0;
         }
       }
-      return fieldosCompletedJobCreateRouterResult_({
+      const result = fieldosCompletedJobCreateRouterResult_({
         job_sheet_id: existingId,
-        job: fieldosNormalizeJobForApi_(job),
-        links: links,
+        work_session_id: String(existing.work_session_id || workSessionId),
         idempotent: true,
-        message: "Existing completed job sheet returned",
-        headers: DB.getHeaders("tbl_job_sheets")
+        link_count: linkCount,
+        message: "Existing completed job sheet returned"
       });
+      fieldosLogCreateCompletedResponse_({
+        work_session_id: workSessionId,
+        job_sheet_id: existingId,
+        idempotent: true,
+        link_count: linkCount,
+        response_bytes: JSON.stringify(result).length,
+        elapsed_ms: Date.now() - startedMs
+      });
+      return result;
     }
 
     // One active job per work session (when session metadata table exists).
@@ -192,7 +229,7 @@ function fieldosCreateCompletedJobSheetFromRecordings_(body) {
       throw new Error("Create Error: job_sheet_id mismatch after insert.");
     }
 
-    const links = [];
+    const linkSummaries = [];
     const createdBy = String(safe.created_by || writable.staff_id || "");
     recordings.forEach(function (rec, idx) {
       const recordingId = String((rec && rec.recording_id) || "").trim();
@@ -217,16 +254,23 @@ function fieldosCreateCompletedJobSheetFromRecordings_(body) {
         sequence: (rec && rec.sequence) || idx + 1,
         created_by: createdBy
       });
-      links.push(link);
+      // Persist only compact link refs — never transcripts in create-key JSON.
+      linkSummaries.push({
+        link_id: String((link && link.link_id) || ""),
+        recording_id: recordingId,
+        sequence: Number((link && link.sequence) || idx + 1)
+      });
     });
 
+    // Persist create-result row before building/returning the HTTP response.
     fieldosStoreCompletedJobIdempotency_({
       idempotency_key: idempotencyKey,
       payload_hash: payloadHash,
       job_sheet_id: jobSheetId,
       work_session_id: workSessionId,
       created_by: createdBy,
-      links: links
+      link_count: linkSummaries.length,
+      links: linkSummaries
     });
 
     fieldosUpsertDailyWorkSessionMeta_({
@@ -250,7 +294,7 @@ function fieldosCreateCompletedJobSheetFromRecordings_(body) {
           actor_staff_id: createdBy,
           detail: JSON.stringify({
             work_session_id: workSessionId,
-            recording_count: links.length,
+            recording_count: linkSummaries.length,
             processing_type: String(safe.processing_type || "daily_work_dictation")
           })
         });
@@ -259,21 +303,31 @@ function fieldosCreateCompletedJobSheetFromRecordings_(body) {
       // Non-fatal.
     }
 
-    return fieldosCompletedJobCreateRouterResult_({
+    fieldosFlushSheetsSafe_();
+
+    const result = fieldosCompletedJobCreateRouterResult_({
       job_sheet_id: jobSheetId,
-      job: fieldosNormalizeJobForApi_(created),
-      links: links,
+      work_session_id: workSessionId,
       idempotent: false,
-      message: "Completed job sheet created",
-      headers: DB.getHeaders("tbl_job_sheets"),
-      missing_job_fields: picked.missing || []
+      link_count: linkSummaries.length,
+      message: "Completed job sheet created"
     });
+    fieldosLogCreateCompletedResponse_({
+      work_session_id: workSessionId,
+      job_sheet_id: jobSheetId,
+      idempotent: false,
+      link_count: linkSummaries.length,
+      response_bytes: JSON.stringify(result).length,
+      elapsed_ms: Date.now() - startedMs
+    });
+    return result;
   });
 }
 
 /**
  * Look up a prior completed-job create by work_session_id and/or idempotency_key.
  * Used by FastAPI reconciliation when create response lacked job_sheet_id.
+ * Response stays small — IDs + hash only (no full job / transcripts).
  */
 function fieldosGetCompletedJobSheetCreateResult_(body) {
   fieldosAssertStaffOrManager_(body);
@@ -301,17 +355,21 @@ function fieldosGetCompletedJobSheetCreateResult_(body) {
         job_sheet_id: "",
         payload_hash: "",
         work_session_id: workSessionId,
-        job: null
+        idempotency_key: idempotencyKey,
+        link_count: 0
       }
     };
   }
 
   const jobSheetId = String(row.job_sheet_id || "").trim();
-  let job = null;
-  try {
-    job = JobSheetRepository.findById(jobSheetId);
-  } catch (e) {
-    job = null;
+  let linkCount = Number(row.link_count || 0);
+  if (!linkCount && typeof row.links_json === "string" && row.links_json) {
+    try {
+      const parsed = JSON.parse(row.links_json) || [];
+      linkCount = Array.isArray(parsed) ? parsed.length : 0;
+    } catch (e) {
+      linkCount = 0;
+    }
   }
   return {
     action: "get_completed_job_sheet_create_result",
@@ -323,7 +381,8 @@ function fieldosGetCompletedJobSheetCreateResult_(body) {
       payload_hash: String(row.payload_hash || ""),
       work_session_id: String(row.work_session_id || workSessionId || ""),
       idempotency_key: String(row.idempotency_key || idempotencyKey || ""),
-      job: job ? fieldosNormalizeJobForApi_(job) : { job_sheet_id: jobSheetId }
+      link_count: linkCount,
+      job: { job_sheet_id: jobSheetId }
     }
   };
 }
@@ -398,6 +457,8 @@ function fieldosStoreCompletedJobIdempotency_(row) {
     work_session_id: row.work_session_id,
     created_by: row.created_by,
     created_at: new Date().toISOString(),
+    link_count: Number(row.link_count || (row.links && row.links.length) || 0),
+    // Compact link refs only — never transcripts / reviewed content.
     links_json: JSON.stringify(row.links || [])
   };
   const headers = DB.getHeaders("tbl_daily_work_create_keys");

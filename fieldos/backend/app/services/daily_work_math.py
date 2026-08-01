@@ -313,6 +313,115 @@ def payload_hash(job: dict[str, Any], work_session_id: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+CREATE_COMPLETED_JOB_ACTION = "create_completed_job_sheet_from_recordings"
+
+
+def dict_keys(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return sorted(str(k) for k in value.keys())
+    return []
+
+
+def resolve_completed_job_sheet_id(
+    response: Any,
+    *,
+    action: str = CREATE_COMPLETED_JOB_ACTION,
+) -> str:
+    """Resolve job_sheet_id from create_completed_job_sheet_from_recordings response.
+
+    Order:
+      1. response.job_sheet_id
+      2. response.job.job_sheet_id
+      3. response.data.job_sheet_id
+      4. response.data.job.job_sheet_id
+      5. response.record_id only for create_completed_job_sheet_from_recordings
+    """
+    if not isinstance(response, dict):
+        return ""
+    top = trim_text(response.get("job_sheet_id"))
+    if top:
+        return top
+    job = response.get("job") if isinstance(response.get("job"), dict) else {}
+    from_job = trim_text(job.get("job_sheet_id"))
+    if from_job:
+        return from_job
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    from_data = trim_text(data.get("job_sheet_id"))
+    if from_data:
+        return from_data
+    data_job = data.get("job") if isinstance(data.get("job"), dict) else {}
+    from_data_job = trim_text(data_job.get("job_sheet_id"))
+    if from_data_job:
+        return from_data_job
+    if trim_text(action) == CREATE_COMPLETED_JOB_ACTION:
+        from_record = trim_text(response.get("record_id"))
+        if from_record:
+            return from_record
+    return ""
+
+
+def extract_completed_job_payload(response: Any) -> dict[str, Any]:
+    """Best-effort job object from create / reconcile envelopes."""
+    if not isinstance(response, dict):
+        return {}
+    job = response.get("job")
+    if isinstance(job, dict) and trim_text(job.get("job_sheet_id")):
+        return job
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    data_job = data.get("job")
+    if isinstance(data_job, dict) and trim_text(data_job.get("job_sheet_id")):
+        return data_job
+    jid = resolve_completed_job_sheet_id(response)
+    return {"job_sheet_id": jid} if jid else {}
+
+
+def extract_completed_create_links(response: Any) -> list[Any]:
+    if not isinstance(response, dict):
+        return []
+    links = response.get("links")
+    if isinstance(links, list):
+        return links
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    data_links = data.get("links")
+    return data_links if isinstance(data_links, list) else []
+
+
+def extract_completed_create_idempotent(response: Any) -> bool:
+    if not isinstance(response, dict):
+        return False
+    if isinstance(response.get("idempotent"), bool):
+        return bool(response.get("idempotent"))
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    if isinstance(data.get("idempotent"), bool):
+        return bool(data.get("idempotent"))
+    return False
+
+
+def parse_completed_job_create_lookup(response: Any) -> dict[str, Any]:
+    """Parse get_completed_job_sheet_create_result envelope into a flat lookup."""
+    if not isinstance(response, dict):
+        return {"found": False, "job_sheet_id": "", "payload_hash": "", "job": None}
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    found = data.get("found")
+    if found is None:
+        found = response.get("found")
+    job_sheet_id = resolve_completed_job_sheet_id(
+        response, action=CREATE_COMPLETED_JOB_ACTION
+    ) or trim_text(data.get("job_sheet_id"))
+    payload_hash_value = trim_text(data.get("payload_hash") or response.get("payload_hash"))
+    job = extract_completed_job_payload(response)
+    if not job and job_sheet_id:
+        job = {"job_sheet_id": job_sheet_id}
+    return {
+        "found": bool(found) and bool(job_sheet_id),
+        "job_sheet_id": job_sheet_id if bool(found) else "",
+        "payload_hash": payload_hash_value,
+        "job": job if bool(found) else None,
+        "work_session_id": trim_text(data.get("work_session_id") or response.get("work_session_id")),
+        "idempotency_key": trim_text(data.get("idempotency_key") or response.get("idempotency_key")),
+    }
+
+
 def move_item(
     job: dict[str, Any],
     *,

@@ -254,7 +254,8 @@ def test_api_create_resume_multi_recording_review_required(tmp_path: Path, monke
     job_sheet_id = create1.json()["job"]["job_sheet_id"]
     assert job_sheet_id
     assert create1.json()["session"]["status"] == "JobCreated"
-    assert len(create1.json()["links"]) == 3
+    assert create1.json()["link_count"] == 3
+    assert create1.json()["links"] == []
 
     # Idempotent same payload
     create2 = client.post(

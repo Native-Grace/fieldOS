@@ -869,12 +869,54 @@ var FieldOSJobCompletion = {
         version: header.version
       });
 
-      return {
+      // Persist all sheet writes before ContentService returns a signed redirect.
+      try {
+        if (typeof SpreadsheetApp !== "undefined" && SpreadsheetApp.flush) {
+          SpreadsheetApp.flush();
+        }
+      } catch (flushErr) {
+        // Non-fatal — best-effort before building the HTTP response.
+      }
+
+      // Minimal ContentService payload only — never return full job/completion/entries.
+      // FastAPI reloads the draft via get_job_completion after success / reconcile.
+      const labourCount = children.labour_entries.length;
+      const machineryCount = children.machinery_entries.length;
+      const materialCount = children.material_entries.length;
+      const completionId = String(header.completion_id || "");
+      const result = {
         action: "generate_job_completion_draft",
-        message: "Draft generated from approved job.",
+        message: "Completion draft generated",
         job_sheet_id: jobSheetId,
-        data: self._assemble(header, children, job, actorRole, staffId)
+        data: {
+          completion_id: completionId,
+          job_sheet_id: jobSheetId,
+          status: String(header.completion_status || FIELDOS_COMPLETION_STATUSES_.DRAFT),
+          labour_count: labourCount,
+          machinery_count: machineryCount,
+          material_count: materialCount,
+          generated: true
+        }
       };
+      try {
+        const bytes = JSON.stringify(result).length;
+        if (typeof Logger !== "undefined" && Logger.log) {
+          Logger.log(
+            JSON.stringify({
+              action: "generate_job_completion_draft",
+              job_sheet_id: jobSheetId,
+              completion_id: completionId,
+              response_bytes: bytes,
+              labour_count: labourCount,
+              machinery_count: machineryCount,
+              material_count: materialCount
+            })
+          );
+        }
+      } catch (logErr) {
+        // Never fail generate on logging.
+      }
+      return result;
     });
   },
 

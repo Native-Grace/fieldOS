@@ -48,6 +48,7 @@ from app.services.daily_work_math import (
     trim_text,
     validate_reviewed_job_sheet,
 )
+from app.services.apps_script import AppsScriptError
 from app.services.daily_work_store import DailyWorkStore
 from app.services.drive_upload import drive_upload_configured, upload_recording_to_drive
 from app.services.recording_files import validate_upload_file
@@ -615,6 +616,44 @@ class DailyWorkService:
                 result = await self.apps_script.create_completed_job_sheet_from_recordings(body)
             else:
                 result = self._mock_create(body)
+        except AppsScriptError as exc:
+            # Create POST may already have inserted job + create-key. Never re-POST.
+            # Reconcile with the same idempotency key first.
+            reconciled = await self._reconcile_missing_job_sheet_id(
+                row,
+                staff_id=staff_id,
+                idempotency_key=key,
+                payload_hash_value=hash_now,
+                reviewed_job_sheet=reviewed_job_sheet,
+            )
+            if reconciled is not None:
+                return reconciled
+            detail = str(exc) or "Create job failed."
+            fail_code = getattr(exc, "code", None) or "apps_script_error"
+            row["status"] = STATUS_CREATE_FAILED
+            row["failure_reason"] = detail
+            row["create_failure_reason"] = detail
+            row["create_failure_code"] = str(fail_code)
+            extraction = row.get("extraction") or empty_extraction(
+                work_session_id, row.get("work_date") or ""
+            )
+            extraction["job_sheet"] = reviewed_job_sheet
+            row["extraction"] = extraction
+            row["version"] = int(row.get("version") or 1) + 1
+            self.store.save(row)
+            self.store.append_audit(
+                row,
+                {
+                    "event": "create_failed",
+                    "by": staff_id,
+                    "code": row["create_failure_code"],
+                    "reconcile": "not_found",
+                },
+            )
+            raise HTTPException(
+                status_code=int(getattr(exc, "http_status", None) or 502),
+                detail=detail,
+            ) from exc
         except HTTPException as exc:
             # Preserve extraction / reviewed data / recordings — only mark create failed.
             detail = exc.detail
@@ -642,6 +681,15 @@ class DailyWorkService:
             )
             raise
         except Exception as exc:
+            reconciled = await self._reconcile_missing_job_sheet_id(
+                row,
+                staff_id=staff_id,
+                idempotency_key=key,
+                payload_hash_value=hash_now,
+                reviewed_job_sheet=reviewed_job_sheet,
+            )
+            if reconciled is not None:
+                return reconciled
             row["status"] = STATUS_CREATE_FAILED
             row["failure_reason"] = str(exc)
             row["create_failure_reason"] = str(exc)
@@ -665,6 +713,12 @@ class DailyWorkService:
         job = extract_completed_job_payload(result)
         links = extract_completed_create_links(result)
         idempotent = extract_completed_create_idempotent(result)
+        data_block = result.get("data") if isinstance(result.get("data"), dict) else {}
+        link_count = data_block.get("link_count")
+        if link_count is None:
+            link_count = result.get("link_count")
+        if link_count is None:
+            link_count = len(links)
 
         if not job_sheet_id:
             # Never auto-issue a second create — reconcile create-key table only.
@@ -705,6 +759,7 @@ class DailyWorkService:
             job_sheet_id=job_sheet_id,
             job=job or {"job_sheet_id": job_sheet_id},
             links=links,
+            link_count=int(link_count or 0),
             idempotent=idempotent,
             idempotency_key=key,
             payload_hash_value=hash_now,
@@ -758,6 +813,7 @@ class DailyWorkService:
             "job": job,
             "session": self._public(row),
             "links": [],
+            "link_count": 0,
             "idempotent": True,
         }
 
@@ -800,6 +856,7 @@ class DailyWorkService:
         idempotency_key: str,
         payload_hash_value: str,
         reviewed_job_sheet: dict[str, Any],
+        link_count: int = 0,
     ) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
         work_session_id = trim_text(row.get("work_session_id"))
@@ -830,10 +887,13 @@ class DailyWorkService:
         out_job = dict(job) if isinstance(job, dict) else {}
         if not trim_text(out_job.get("job_sheet_id")):
             out_job["job_sheet_id"] = job_sheet_id
+        out_links = links if isinstance(links, list) else []
+        count = int(link_count or 0) or len(out_links)
         return {
             "job": out_job,
             "session": self._public(row),
-            "links": links if isinstance(links, list) else [],
+            "links": out_links,
+            "link_count": count,
             "idempotent": bool(idempotent),
         }
 
@@ -933,6 +993,7 @@ class DailyWorkService:
             job_sheet_id=parsed["job_sheet_id"],
             job=parsed.get("job") or {"job_sheet_id": parsed["job_sheet_id"]},
             links=[],
+            link_count=0,
             idempotent=True,
             idempotency_key=idempotency_key,
             payload_hash_value=payload_hash_value,
@@ -940,50 +1001,22 @@ class DailyWorkService:
         )
 
     def _mock_create(self, body: dict[str, Any]) -> dict[str, Any]:
-        now = datetime.now(timezone.utc).isoformat()
         job_sheet_id = f"JS-{uuid.uuid4().hex[:8].upper()}"
-        fields = body.get("job_fields") or {}
-        job = {
-            "job_sheet_id": job_sheet_id,
-            "staff_id": fields.get("staff_id"),
-            "date": fields.get("date"),
-            "project_id": fields.get("project_id"),
-            "project_name": fields.get("project_id"),
-            "customer_name": (body.get("reviewed_job_sheet") or {}).get("customer_name") or "",
-            "manager_notes": fields.get("manager_notes"),
-            "processing_status": "Completed",
-            "processing_error": "",
-            "approval_status": fields.get("approval_status") or "Pending Review",
-            "created_at": now,
-        }
-        links = []
-        for r in body.get("recordings") or []:
-            links.append(
-                {
-                    "link_id": f"JRL-{uuid.uuid4().hex[:8].upper()}",
-                    "job_sheet_id": job_sheet_id,
-                    "recording_id": r.get("recording_id"),
-                    "work_session_id": body.get("work_session_id"),
-                    "sequence": r.get("sequence") or 0,
-                    "created_at": now,
-                    "created_by": body.get("created_by"),
-                }
-            )
-        # Mirror Apps Script success contract (top-level + nested).
+        link_count = len(body.get("recordings") or [])
+        # Mirror Apps Script minimal success contract (no full job / transcripts).
         return {
             "status": "Success",
+            "action": CREATE_COMPLETED_JOB_ACTION,
             "message": "Completed job sheet created",
             "job_sheet_id": job_sheet_id,
             "record_id": job_sheet_id,
-            "job": job,
-            "links": links,
             "idempotent": False,
             "data": {
                 "job_sheet_id": job_sheet_id,
                 "record_id": job_sheet_id,
-                "job": job,
-                "links": links,
+                "work_session_id": body.get("work_session_id") or "",
                 "idempotent": False,
+                "link_count": link_count,
             },
         }
 

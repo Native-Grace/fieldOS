@@ -734,6 +734,7 @@ function migrateSchemaForDailyWorkSessions() {
     "work_session_id",
     "created_by",
     "created_at",
+    "link_count",
     "links_json"
   ];
   const linkExtraHeaders = [

@@ -69,7 +69,12 @@ class Settings(BaseSettings):
 
     apps_script_webapp_url: str = Field(default="", alias="APPS_SCRIPT_WEBAPP_URL")
     apps_script_webhook_secret: str = Field(default="", alias="APPS_SCRIPT_WEBHOOK_SECRET")
-    apps_script_timeout_seconds: float = Field(default=30.0, alias="APPS_SCRIPT_TIMEOUT_SECONDS")
+    # Initial POST to /exec may do sheet work — keep generous (ContentService then redirects).
+    apps_script_timeout_seconds: float = Field(default=90.0, alias="APPS_SCRIPT_TIMEOUT_SECONDS")
+    # Immediate GET of ContentService Location (script.googleusercontent.com).
+    apps_script_redirect_get_timeout_seconds: float = Field(
+        default=15.0, alias="APPS_SCRIPT_REDIRECT_GET_TIMEOUT_SECONDS"
+    )
 
     cors_origins: str = Field(default="http://localhost:8080,http://localhost:5173", alias="CORS_ORIGINS")
 

@@ -754,6 +754,7 @@ async def create_daily_work_job_sheet(
         job=result.get("job") or {},
         session=DailyWorkSessionOut.model_validate(result.get("session") or {}),
         links=result.get("links") or [],
+        link_count=int(result.get("link_count") or len(result.get("links") or [])),
         idempotent=bool(result.get("idempotent")),
         data_mode=settings.data_mode,
     )

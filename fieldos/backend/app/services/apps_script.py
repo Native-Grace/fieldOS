@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -11,6 +13,12 @@ from app.core.logging import get_logger, log_extra
 from app.services.drive_upload import redact_secrets, safe_json_preview
 
 logger = get_logger(__name__)
+
+# ContentService returns 302 → script.googleusercontent.com/macros/echo?...
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# First hop from /exec + up to 2 further redirects (never re-POST /exec).
+_MAX_CONTENTSERVICE_REDIRECTS = 3
+_ALLOWED_REDIRECT_HOSTS = frozenset({"script.googleusercontent.com"})
 
 # Phase 3E gateway actions (see FieldOSGateway.js).
 RATES_ACTIONS = (
@@ -87,10 +95,45 @@ ATTACHMENT_ACTIONS = (
 class AppsScriptError(Exception):
     """Normalized Apps Script / transport failure for repository layer."""
 
-    def __init__(self, message: str, *, http_status: Optional[int] = None, apps_status: Optional[str] = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: Optional[int] = None,
+        apps_status: Optional[str] = None,
+        code: Optional[str] = None,
+    ):
         super().__init__(message)
         self.http_status = http_status
         self.apps_status = apps_status
+        self.code = code
+
+
+def _redirect_hostname(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_allowed_contentservice_redirect_host(hostname: str) -> bool:
+    host = (hostname or "").lower().strip(".")
+    if not host:
+        return False
+    if host in _ALLOWED_REDIRECT_HOSTS:
+        return True
+    # Explicitly approved sibling hosts for signed echo responses.
+    if host.endswith(".googleusercontent.com"):
+        return True
+    return False
+
+
+def _looks_like_html(response: httpx.Response) -> bool:
+    ctype = (response.headers.get("content-type") or "").lower()
+    if "text/html" in ctype or "application/xhtml" in ctype:
+        return True
+    text = (response.text or "").lstrip()[:64].lower()
+    return text.startswith("<!doctype html") or text.startswith("<html")
 
 
 class AppsScriptClient:
@@ -115,6 +158,163 @@ class AppsScriptClient:
             "project_column": self.settings.job_project_column,
             "customer_column": self.settings.job_customer_column,
         }
+
+    def _post_timeout(self) -> httpx.Timeout:
+        read = float(getattr(self.settings, "apps_script_timeout_seconds", 90.0) or 90.0)
+        return httpx.Timeout(connect=15.0, read=read, write=30.0, pool=15.0)
+
+    def _redirect_get_timeout(self) -> httpx.Timeout:
+        read = float(
+            getattr(self.settings, "apps_script_redirect_get_timeout_seconds", 15.0) or 15.0
+        )
+        return httpx.Timeout(connect=10.0, read=read, write=15.0, pool=10.0)
+
+    async def _follow_contentservice_redirects(
+        self,
+        client: httpx.AsyncClient,
+        response: httpx.Response,
+        *,
+        action: str,
+        post_elapsed_ms: int,
+        post_finished_at: float,
+    ) -> httpx.Response:
+        """POST /exec may return ContentService 302; fetch Location with GET only.
+
+        Never re-POSTs the webhook payload. Never follows back to script.google.com/exec.
+        """
+        seen: set[str] = set()
+        redirect_num = 0
+        current = response
+
+        while current.status_code in _REDIRECT_STATUSES:
+            location = (current.headers.get("location") or "").strip()
+            if not location:
+                log_extra(
+                    logger,
+                    40,
+                    "Apps Script redirect missing Location",
+                    action=action,
+                    initial_http_status=response.status_code,
+                    redirect_number=redirect_num,
+                    final_http_status=current.status_code,
+                    post_elapsed_ms=post_elapsed_ms,
+                )
+                raise AppsScriptError(
+                    "Apps Script redirect missing Location header.",
+                    http_status=502,
+                    code="apps_script_missing_location",
+                )
+
+            absolute = urljoin(str(current.url), location)
+            host = _redirect_hostname(absolute)
+            wait_ms = int((time.monotonic() - post_finished_at) * 1000)
+            log_extra(
+                logger,
+                20,
+                "Apps Script ContentService redirect",
+                action=action,
+                initial_http_status=response.status_code,
+                redirect_number=redirect_num + 1,
+                redirect_hostname=host,
+                post_elapsed_ms=post_elapsed_ms,
+                redirect_get_wait_ms=wait_ms,
+            )
+
+            if not _is_allowed_contentservice_redirect_host(host):
+                log_extra(
+                    logger,
+                    40,
+                    "Apps Script redirect host rejected",
+                    action=action,
+                    redirect_number=redirect_num + 1,
+                    redirect_hostname=host,
+                    post_elapsed_ms=post_elapsed_ms,
+                )
+                raise AppsScriptError(
+                    f"Apps Script redirect host rejected ({host or 'unknown'}).",
+                    http_status=502,
+                    code="apps_script_redirect_host_rejected",
+                )
+
+            if absolute in seen:
+                raise AppsScriptError(
+                    "Apps Script redirect loop detected.",
+                    http_status=502,
+                    code="apps_script_redirect_loop",
+                )
+            seen.add(absolute)
+
+            redirect_num += 1
+            if redirect_num > _MAX_CONTENTSERVICE_REDIRECTS:
+                raise AppsScriptError(
+                    "Apps Script redirect limit exceeded.",
+                    http_status=502,
+                    code="apps_script_redirect_loop",
+                )
+
+            get_started = time.monotonic()
+            try:
+                # Exact Location URL — do not alter signed query parameters.
+                current = await client.get(
+                    absolute,
+                    timeout=self._redirect_get_timeout(),
+                    follow_redirects=False,
+                )
+            except httpx.TimeoutException as exc:
+                log_extra(
+                    logger,
+                    40,
+                    "Apps Script redirect GET timeout",
+                    action=action,
+                    redirect_number=redirect_num,
+                    redirect_hostname=host,
+                    post_elapsed_ms=post_elapsed_ms,
+                    redirect_get_elapsed_ms=int((time.monotonic() - get_started) * 1000),
+                )
+                raise AppsScriptError(
+                    "Apps Script redirect GET timed out.",
+                    http_status=504,
+                    code="apps_script_timeout",
+                ) from exc
+            except httpx.HTTPError as exc:
+                log_extra(
+                    logger,
+                    40,
+                    "Apps Script redirect GET transport error",
+                    action=action,
+                    redirect_number=redirect_num,
+                    redirect_hostname=host,
+                    error=type(exc).__name__,
+                )
+                raise AppsScriptError(
+                    "Apps Script redirect GET unreachable.",
+                    http_status=502,
+                    code="apps_script_redirect_expired",
+                ) from exc
+
+            log_extra(
+                logger,
+                20,
+                "Apps Script redirect GET completed",
+                action=action,
+                redirect_number=redirect_num,
+                redirect_hostname=host,
+                final_http_status=current.status_code,
+                final_content_type=(current.headers.get("content-type") or "")[:80],
+                final_body_length=len(current.content or b""),
+                post_elapsed_ms=post_elapsed_ms,
+                redirect_get_elapsed_ms=int((time.monotonic() - get_started) * 1000),
+                redirect_get_wait_ms=wait_ms,
+            )
+
+            if current.status_code == 404:
+                raise AppsScriptError(
+                    "Apps Script ContentService redirect expired (404).",
+                    http_status=502,
+                    code="apps_script_redirect_expired",
+                )
+
+        return current
 
     async def _post(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         self._require_configured()
@@ -145,43 +345,104 @@ class AppsScriptClient:
             "action": action,
             "webhook_secret": self.settings.apps_script_webhook_secret,
         }
+
+        # Explicit ContentService handling — do NOT use follow_redirects=True.
+        # Generic redirect following can re-POST or chase back to /exec HTML.
+        # Contract: POST JSON once to /exec, then GET the exact Location.
+        # Never automatically retry the original POST (critical for creates).
+        started = time.monotonic()
         try:
-            # ContentService JSON responses redirect (302) to script.googleusercontent.com;
-            # httpx must follow redirects — do not re-POST the Location manually.
-            async with httpx.AsyncClient(
-                timeout=self.settings.apps_script_timeout_seconds,
-                follow_redirects=True,
-            ) as client:
-                response = await client.post(
-                    self.settings.apps_script_webapp_url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                try:
+                    response = await client.post(
+                        self.settings.apps_script_webapp_url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                        timeout=self._post_timeout(),
+                    )
+                except httpx.TimeoutException as exc:
+                    log_extra(
+                        logger,
+                        40,
+                        "Apps Script timeout",
+                        action=action,
+                        post_elapsed_ms=int((time.monotonic() - started) * 1000),
+                    )
+                    raise AppsScriptError(
+                        "Apps Script request timed out.",
+                        http_status=504,
+                        code="apps_script_timeout",
+                    ) from exc
+                except httpx.HTTPError as exc:
+                    log_extra(
+                        logger,
+                        40,
+                        "Apps Script transport error",
+                        action=action,
+                        error=type(exc).__name__,
+                    )
+                    raise AppsScriptError(
+                        "Apps Script unreachable.",
+                        http_status=502,
+                    ) from exc
+
+                post_finished_at = time.monotonic()
+                post_elapsed_ms = int((post_finished_at - started) * 1000)
+                log_extra(
+                    logger,
+                    20,
+                    "Apps Script initial response",
+                    action=action,
+                    initial_http_status=response.status_code,
+                    post_elapsed_ms=post_elapsed_ms,
+                    content_type=(response.headers.get("content-type") or "")[:80],
+                    body_length=len(response.content or b""),
                 )
-        except httpx.TimeoutException as exc:
-            log_extra(logger, 40, "Apps Script timeout", action=action)
-            raise AppsScriptError("Apps Script request timed out.", http_status=504) from exc
-        except httpx.TooManyRedirects as exc:
-            log_extra(logger, 40, "Apps Script redirect limit exceeded", action=action)
-            raise AppsScriptError("Apps Script redirect limit exceeded.", http_status=502) from exc
-        except httpx.HTTPError as exc:
-            log_extra(logger, 40, "Apps Script transport error", action=action, error=type(exc).__name__)
-            raise AppsScriptError("Apps Script unreachable.", http_status=502) from exc
+
+                response = await self._follow_contentservice_redirects(
+                    client,
+                    response,
+                    action=action,
+                    post_elapsed_ms=post_elapsed_ms,
+                    post_finished_at=post_finished_at,
+                )
+        except AppsScriptError:
+            raise
+
+        if _looks_like_html(response):
+            log_extra(
+                logger,
+                40,
+                "Apps Script HTML response",
+                action=action,
+                final_http_status=response.status_code,
+                final_content_type=(response.headers.get("content-type") or "")[:80],
+                final_body_length=len(response.content or b""),
+            )
+            raise AppsScriptError(
+                "Apps Script returned HTML instead of JSON.",
+                http_status=502,
+                code="apps_script_response_html",
+            )
 
         try:
             data = response.json()
         except Exception as exc:
-            preview = (response.text or "")[:300]
+            preview = (response.text or "")[:120]
             log_extra(
                 logger,
                 40,
                 "Apps Script non-JSON response",
                 action=action,
                 http_status=response.status_code,
+                final_content_type=(response.headers.get("content-type") or "")[:80],
+                final_body_length=len(response.content or b""),
                 preview=preview,
             )
             raise AppsScriptError(
                 f"Invalid Apps Script response ({response.status_code}).",
                 http_status=502,
+                code="apps_script_response_invalid_json",
             ) from exc
 
         if not isinstance(data, dict) or "status" not in data:
@@ -192,12 +453,19 @@ class AppsScriptClient:
                 action=action,
                 preview=safe_json_preview(data),
             )
-            raise AppsScriptError("Invalid Apps Script response shape.", http_status=502)
+            raise AppsScriptError(
+                "Invalid Apps Script response shape.",
+                http_status=502,
+                code="apps_script_response_invalid_json",
+            )
 
         apps_status = str(data.get("status", ""))
         data_block = data.get("data") if isinstance(data.get("data"), dict) else {}
         jobs = data_block.get("jobs") if isinstance(data_block, dict) else None
         job_count = len(jobs) if isinstance(jobs, list) else None
+        job_block = data.get("job") if isinstance(data.get("job"), dict) else {}
+        if not job_block and isinstance(data_block.get("job"), dict):
+            job_block = data_block.get("job") or {}
         log_extra(
             logger,
             20 if apps_status.lower() == "success" else 40,
@@ -207,6 +475,17 @@ class AppsScriptClient:
             apps_status=apps_status,
             apps_message=str(data.get("message", ""))[:200],
             job_count=job_count,
+            top_level_keys=sorted(str(k) for k in data.keys()),
+            data_keys=sorted(str(k) for k in data_block.keys()) if data_block else [],
+            job_keys=sorted(str(k) for k in job_block.keys()) if job_block else [],
+            has_record_id=bool(str(data.get("record_id") or "").strip()),
+            has_job_sheet_id=bool(
+                str(data.get("job_sheet_id") or "").strip()
+                or str(job_block.get("job_sheet_id") or "").strip()
+                or str(data_block.get("job_sheet_id") or "").strip()
+            ),
+            final_content_type=(response.headers.get("content-type") or "")[:80],
+            final_body_length=len(response.content or b""),
         )
 
         if apps_status.lower() != "success":
@@ -451,6 +730,14 @@ class AppsScriptClient:
         safe_body = build_apps_script_create_completed_job_sheet_payload(body)
         return await self._post(
             "create_completed_job_sheet_from_recordings",
+            {**safe_body, **self._column_payload()},
+        )
+
+    async def get_completed_job_sheet_create_result(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Reconcile prior create via tbl_daily_work_create_keys — never creates."""
+        safe_body = redact_secrets(body)
+        return await self._post(
+            "get_completed_job_sheet_create_result",
             {**safe_body, **self._column_payload()},
         )
 

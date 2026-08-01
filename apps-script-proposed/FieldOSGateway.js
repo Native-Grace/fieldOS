@@ -273,25 +273,22 @@ function fieldosJsonResponse(status, action, message, recordId, data) {
     record_id: recordId || null,
     timestamp: new Date().toISOString()
   };
-  if (recordId) {
-    response.job_sheet_id = recordId;
-  }
   if (data !== undefined) {
     response.data = data;
     if (data && typeof data === "object" && !Array.isArray(data)) {
-      if (data.job && typeof data.job === "object") {
-        response.job = data.job;
-      }
       if (typeof data.idempotent === "boolean") {
         response.idempotent = data.idempotent;
       }
-      if (Array.isArray(data.links)) {
-        response.links = data.links;
-      }
-      if (!response.job_sheet_id && data.job_sheet_id) {
+      if (data.job_sheet_id) {
         response.job_sheet_id = data.job_sheet_id;
       }
+      if (data.completion_id) {
+        response.record_id = data.completion_id;
+      }
     }
+  }
+  if (!response.job_sheet_id && recordId) {
+    response.job_sheet_id = recordId;
   }
   return ContentService.createTextOutput(JSON.stringify(response))
     .setMimeType(ContentService.MimeType.JSON);
