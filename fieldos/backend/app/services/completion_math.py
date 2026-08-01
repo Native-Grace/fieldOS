@@ -77,6 +77,73 @@ def normalise_material_quantity(raw: Any, *, unit: str = "") -> dict[str, Any]:
     }
 
 
+def coerce_optional_float(raw: Any) -> float | None:
+    """Blank/None → None. Numeric strings → float. Never Number(\"\")→0. Reject text."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("must be a number")
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError("must be a number")
+        return value
+    s = str(raw).strip()
+    if not s:
+        return None
+    if not _QTY_ONLY_RE.match(s):
+        raise ValueError("must be a number")
+    return float(s)
+
+
+def coerce_float_default(raw: Any, default: float = 0.0) -> float:
+    """Blank/None → default (for break_minutes / travel_minutes). Reject invalid text."""
+    if raw is None:
+        return float(default)
+    if isinstance(raw, str) and not str(raw).strip():
+        return float(default)
+    value = coerce_optional_float(raw)
+    return float(default) if value is None else value
+
+
+def format_completion_validation_loc(loc: tuple[Any, ...] | list[Any]) -> str:
+    """Map Pydantic loc to a UI-friendly message fragment."""
+    parts = [p for p in loc if p != "body"]
+    if not parts:
+        return "Request value must be a number."
+
+    def _row_label(kind: str, index: Any, field: Any) -> str:
+        try:
+            row_n = int(index) + 1
+        except (TypeError, ValueError):
+            row_n = index
+        field_name = str(field or "value").replace("_", " ")
+        kind_label = {
+            "labour_entries": "Labour",
+            "machinery_entries": "Machinery",
+            "material_entries": "Material",
+        }.get(str(kind), str(kind))
+        return f"{kind_label} row {row_n} {field_name} must be a number."
+
+    if len(parts) >= 3 and parts[0] in ("labour_entries", "machinery_entries", "material_entries"):
+        return _row_label(parts[0], parts[1], parts[2])
+    # model_validator errors often land on the row object (no field segment).
+    if len(parts) == 2 and parts[0] in ("labour_entries", "machinery_entries", "material_entries"):
+        default_field = "quantity" if parts[0] == "material_entries" else "value"
+        return _row_label(parts[0], parts[1], default_field)
+    if len(parts) == 1:
+        return f"{str(parts[0]).replace('_', ' ')} must be a number."
+    return f"{'.'.join(str(p) for p in parts)} must be a number."
+
+
+def preview_validation_input(value: Any, limit: int = 50) -> str:
+    text = "" if value is None else str(value)
+    text = text.replace("\n", " ").strip()
+    if len(text) > limit:
+        return text[:limit]
+    return text
+
+
 def _pad_clock(hours: int, minutes: int) -> str | None:
     if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
         return None

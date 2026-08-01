@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildCompletionForm,
+  buildCompletionSavePayload,
   canFinaliseClient,
   collectLabourValidationMessages,
   collectMaterialValidationMessages,
@@ -20,6 +21,8 @@ import {
   needsOverrideReason,
   normaliseClockTime,
   normaliseMaterialQuantity,
+  normaliseNumberWithDefault,
+  normaliseOptionalNumber,
   parseMaterialQuantityRowError,
   ROW_CONFIRMATION,
   upsertBreakWarningResolution,
@@ -212,10 +215,55 @@ test("material quantity validation highlights row and retains edits", () => {
   assert.equal(messages.length, 1);
   assert.match(messages[0], /Material row 2/);
   assert.equal(parseMaterialQuantityRowError(messages[0]), 1);
-  assert.equal(materialFieldErrors(form.material_entries[1]).quantity, "Quantity must be numeric.");
+  assert.equal(materialFieldErrors(form.material_entries[1]).quantity, "Quantity must be a number.");
   // Unsaved edits remain on the form object (no regenerate).
   assert.equal(form.work_summary, "Keep me");
   assert.equal(form.material_entries[1].quantity, "several");
+});
+
+test("buildCompletionSavePayload normalises numerics and blocks invalid text", () => {
+  assert.equal(normaliseOptionalNumber("").value, null);
+  assert.equal(normaliseOptionalNumber("0").value, 0);
+  assert.equal(normaliseOptionalNumber(" 2.5 ").value, 2.5);
+  assert.equal(normaliseNumberWithDefault("", 0).value, 0);
+  assert.equal(normaliseOptionalNumber("several").ok, false);
+
+  const form = buildCompletionForm({
+    completion: { work_summary: "Local summary", invoice_description: "Inv" },
+    labour_entries: [
+      {
+        ...emptyLabourRow(),
+        break_minutes: "30",
+        travel_minutes: " 0 ",
+        labour_hours: "",
+      },
+    ],
+    machinery_entries: [{ equipment_name: "Excavator", duration_hours: "1.5" }],
+    material_entries: [
+      { item_name: "Soil", quantity: "2 bags", unit: "" },
+      { item_name: "Optional", quantity: "  ", unit: "" },
+    ],
+  });
+  const ok = buildCompletionSavePayload(form, { expected_version: 2 });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.payload.labour_entries[0].break_minutes, 30);
+  assert.equal(ok.payload.labour_entries[0].travel_minutes, 0);
+  assert.equal(ok.payload.labour_entries[0].labour_hours, null);
+  assert.equal(ok.payload.machinery_entries[0].duration_hours, 1.5);
+  assert.equal(ok.payload.material_entries[0].quantity, 2);
+  assert.equal(ok.payload.material_entries[0].unit, "bags");
+  assert.equal(ok.payload.material_entries[1].quantity, null);
+  assert.equal(ok.payload.expected_version, 2);
+
+  const bad = buildCompletionSavePayload({
+    ...form,
+    material_entries: [{ item_name: "X", quantity: "several", unit: "" }],
+  });
+  assert.equal(bad.ok, false);
+  assert.match(bad.errors[0].message, /Material row 1 quantity must be a number/);
+  // Local form values untouched by builder.
+  assert.equal(form.work_summary, "Local summary");
+  assert.equal(form.material_entries[0].quantity, "2 bags");
 });
 
 test("409 conflict messaging requires reload and preserves local copy", () => {

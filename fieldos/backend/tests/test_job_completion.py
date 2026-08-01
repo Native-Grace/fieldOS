@@ -964,3 +964,102 @@ def test_normalise_material_quantity_helpers() -> None:
     assert split["unit"] == "bags"
     assert normalise_material_quantity("several")["ok"] is False
     assert normalise_material_quantity("N/A")["ok"] is False
+
+
+def test_material_entry_schema_coerces_numeric_strings_and_splits_units() -> None:
+    from app.models.schemas import LabourEntry, MachineryEntry, MaterialEntry
+    from pydantic import ValidationError
+
+    assert MaterialEntry.model_validate({"quantity": 2}).quantity == 2.0
+    assert MaterialEntry.model_validate({"quantity": "2.5"}).quantity == 2.5
+    assert MaterialEntry.model_validate({"quantity": "  "}).quantity is None
+    split = MaterialEntry.model_validate({"quantity": "2 bags", "unit": ""})
+    assert split.quantity == 2.0
+    assert split.unit == "bags"
+    assert LabourEntry.model_validate({"break_minutes": "30", "labour_hours": ""}).break_minutes == 30.0
+    assert LabourEntry.model_validate({"break_minutes": "30", "labour_hours": ""}).labour_hours is None
+    assert MachineryEntry.model_validate({"duration_hours": ""}).duration_hours is None
+    assert MachineryEntry.model_validate({"duration_hours": "1.25"}).duration_hours == 1.25
+    with pytest.raises(ValidationError):
+        MaterialEntry.model_validate({"quantity": "several"})
+
+
+def test_patch_completion_accepts_numeric_strings_without_apps_script() -> None:
+    from app.models.schemas import CompletionUpdateRequest, LabourEntry, MachineryEntry, MaterialEntry
+
+    body = CompletionUpdateRequest.model_validate(
+        {
+            "expected_version": "2",
+            "material_entries": [
+                {"item_name": "Soil", "quantity": "2 bags", "unit": ""},
+                {"item_name": "Optional", "quantity": "", "unit": ""},
+                {"item_name": "Decimal", "quantity": "2.5", "unit": "m3"},
+            ],
+            "labour_entries": [
+                {
+                    "staff_id": "STAFF-DEMO001",
+                    "break_minutes": "30",
+                    "travel_minutes": "15",
+                    "labour_hours": "",
+                    "start_time": "07:00",
+                    "finish_time": "15:00",
+                }
+            ],
+            "machinery_entries": [{"equipment_name": "Excavator", "duration_hours": "2.5"}],
+        }
+    )
+    assert body.expected_version == 2
+    assert body.material_entries is not None
+    assert body.material_entries[0].quantity == 2.0
+    assert body.material_entries[0].unit == "bags"
+    assert body.material_entries[1].quantity is None
+    assert body.material_entries[2].quantity == 2.5
+    assert body.labour_entries is not None
+    assert body.labour_entries[0].break_minutes == 30.0
+    assert body.labour_entries[0].labour_hours is None
+    assert body.machinery_entries is not None
+    assert body.machinery_entries[0].duration_hours == 2.5
+    # Zero preserved.
+    assert LabourEntry.model_validate({"break_minutes": 0}).break_minutes == 0.0
+    assert MaterialEntry.model_validate({"quantity": "0"}).quantity == 0.0
+    assert MachineryEntry.model_validate({"duration_hours": "0"}).duration_hours == 0.0
+
+
+def test_patch_completion_rejects_arbitrary_text_with_row_field(
+    client: TestClient,
+) -> None:
+    job_id = _approve_demo_job(client)
+    headers = _manager_headers(client)
+    gen = client.post(f"/api/v1/jobs/{job_id}/completion/generate", headers=headers, json={})
+    assert gen.status_code == 200, gen.text
+    version = gen.json()["completion"]["version"]
+
+    bad = client.patch(
+        f"/api/v1/jobs/{job_id}/completion",
+        headers=headers,
+        json={
+            "expected_version": version,
+            "material_entries": [
+                {"item_name": "Ok", "quantity": 1},
+                {"item_name": "Bad", "quantity": "several"},
+            ],
+        },
+    )
+    assert bad.status_code == 422, bad.text
+    detail = bad.json()["detail"]
+    assert isinstance(detail, str)
+    assert "Material row 2 quantity must be a number" in detail
+    assert "unable to parse string as a number" not in detail.lower()
+
+
+def test_format_completion_validation_loc() -> None:
+    from app.services.completion_math import format_completion_validation_loc
+
+    assert (
+        format_completion_validation_loc(("body", "material_entries", 1, "quantity"))
+        == "Material row 2 quantity must be a number."
+    )
+    assert (
+        format_completion_validation_loc(("body", "labour_entries", 0, "labour_hours"))
+        == "Labour row 1 labour hours must be a number."
+    )

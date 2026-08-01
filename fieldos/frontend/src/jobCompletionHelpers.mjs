@@ -193,13 +193,43 @@ export function normaliseMaterialQuantity(raw, options = {}) {
   return { ok: false, quantity: null, unit: existingUnit, error: "non_numeric", raw: s };
 }
 
-/** Parse "Material row N quantity must be numeric." → 0-based index or null. */
+/** Parse "Material row N quantity must be a number/numeric." → 0-based index or null. */
 export function parseMaterialQuantityRowError(message) {
-  const m = /Material row\s+(\d+)\s+quantity must be numeric/i.exec(String(message || ""));
+  const m = /Material row\s+(\d+)\s+quantity must be (?:a number|numeric)/i.exec(String(message || ""));
   if (!m) return null;
   const n = Number(m[1]);
   if (!Number.isFinite(n) || n < 1) return null;
   return n - 1;
+}
+
+/** Parse any "Labour|Machinery|Material row N <field> must be a number." */
+export function parseCompletionNumericFieldError(message) {
+  const m =
+    /(Labour|Machinery|Material) row\s+(\d+)\s+([a-z0-9_ ]+?)\s+must be (?:a number|numeric)/i.exec(
+      String(message || "")
+    );
+  if (!m) return null;
+  const kind = m[1].toLowerCase();
+  const row = Number(m[2]) - 1;
+  const field = String(m[3] || "")
+    .trim()
+    .replace(/\s+/g, "_");
+  if (!Number.isFinite(row) || row < 0) return null;
+  const prefix =
+    kind === "labour" ? "lab" : kind === "machinery" ? "mch" : "mat";
+  const focusId =
+    field === "quantity"
+      ? `${prefix}-qty-${row}`
+      : field.includes("duration")
+        ? `${prefix}-hours-${row}`
+        : field.includes("break")
+          ? `${prefix}-break-${row}`
+          : field.includes("travel")
+            ? `${prefix}-travel-${row}`
+            : field.includes("labour_hours") || field === "hours"
+              ? `${prefix}-hours-${row}`
+              : null;
+  return { kind, row, field, focusId };
 }
 
 export function materialFieldErrors(row) {
@@ -207,7 +237,7 @@ export function materialFieldErrors(row) {
   if (!row || row.confirmation_status === ROW_CONFIRMATION.EXCLUDED) return errors;
   const normalised = normaliseMaterialQuantity(row.quantity, { unit: row.unit || "" });
   if (!normalised.ok) {
-    errors.quantity = "Quantity must be numeric.";
+    errors.quantity = "Quantity must be a number.";
   }
   return errors;
 }
@@ -217,10 +247,210 @@ export function collectMaterialValidationMessages(form) {
   (form?.material_entries || []).forEach((row, index) => {
     const errors = materialFieldErrors(row);
     if (errors.quantity) {
-      messages.push(`Material row ${index + 1} quantity must be numeric.`);
+      messages.push(`Material row ${index + 1} quantity must be a number.`);
     }
   });
   return messages;
+}
+
+/**
+ * Optional numeric: blank → null. Never Number(""). Rejects arbitrary text.
+ */
+export function normaliseOptionalNumber(raw) {
+  if (raw === null || raw === undefined) {
+    return { ok: true, value: null, blank: true };
+  }
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) {
+      return { ok: false, value: null, blank: false, raw: String(raw) };
+    }
+    return { ok: true, value: raw, blank: false };
+  }
+  const s = String(raw).trim();
+  if (!s) {
+    return { ok: true, value: null, blank: true };
+  }
+  if (/^[+-]?\d+(\.\d+)?$/.test(s)) {
+    return { ok: true, value: Number(s), blank: false };
+  }
+  return { ok: false, value: null, blank: false, raw: s };
+}
+
+/**
+ * Required numeric with default (break/travel minutes). Blank → default. Zero stays zero.
+ */
+export function normaliseNumberWithDefault(raw, defaultValue = 0) {
+  if (raw === null || raw === undefined || String(raw).trim() === "") {
+    return { ok: true, value: defaultValue, blank: true };
+  }
+  const n = normaliseOptionalNumber(raw);
+  if (!n.ok) return n;
+  return { ok: true, value: n.value == null ? defaultValue : n.value, blank: false };
+}
+
+/**
+ * Build PATCH/POST body with normalised numerics. Does not mutate form.
+ * Invalid text blocks submission (ok: false) without calling the API.
+ */
+export function buildCompletionSavePayload(form, extra = {}) {
+  const errors = [];
+  const labour_entries = (form?.labour_entries || []).map((row, index) => {
+    const breakN = normaliseNumberWithDefault(row.break_minutes, 0);
+    const travelN = normaliseNumberWithDefault(row.travel_minutes, 0);
+    const hoursN = normaliseOptionalNumber(row.labour_hours);
+    const travelHoursN = normaliseOptionalNumber(row.travel_hours);
+    const confidenceN = normaliseOptionalNumber(row.confidence);
+    if (!breakN.ok) {
+      errors.push({
+        kind: "labour",
+        row: index,
+        field: "break_minutes",
+        message: `Labour row ${index + 1} break minutes must be a number.`,
+        focusId: `lab-break-${index}`,
+      });
+    }
+    if (!travelN.ok) {
+      errors.push({
+        kind: "labour",
+        row: index,
+        field: "travel_minutes",
+        message: `Labour row ${index + 1} travel minutes must be a number.`,
+        focusId: `lab-travel-${index}`,
+      });
+    }
+    if (!hoursN.ok) {
+      errors.push({
+        kind: "labour",
+        row: index,
+        field: "labour_hours",
+        message: `Labour row ${index + 1} labour hours must be a number.`,
+        focusId: `lab-hours-${index}`,
+      });
+    }
+    if (!travelHoursN.ok) {
+      errors.push({
+        kind: "labour",
+        row: index,
+        field: "travel_hours",
+        message: `Labour row ${index + 1} travel hours must be a number.`,
+        focusId: `lab-travel-${index}`,
+      });
+    }
+    if (!confidenceN.ok) {
+      errors.push({
+        kind: "labour",
+        row: index,
+        field: "confidence",
+        message: `Labour row ${index + 1} confidence must be a number.`,
+        focusId: null,
+      });
+    }
+    return {
+      ...row,
+      break_minutes: breakN.ok ? breakN.value : row.break_minutes,
+      travel_minutes: travelN.ok ? travelN.value : row.travel_minutes,
+      labour_hours: hoursN.ok ? hoursN.value : row.labour_hours,
+      travel_hours: travelHoursN.ok ? travelHoursN.value : row.travel_hours,
+      confidence: confidenceN.ok ? confidenceN.value : row.confidence,
+    };
+  });
+
+  const machinery_entries = (form?.machinery_entries || []).map((row, index) => {
+    const durationN = normaliseOptionalNumber(row.duration_hours);
+    const confidenceN = normaliseOptionalNumber(row.confidence);
+    if (!durationN.ok) {
+      errors.push({
+        kind: "machinery",
+        row: index,
+        field: "duration_hours",
+        message: `Machinery row ${index + 1} duration hours must be a number.`,
+        focusId: `mch-hours-${index}`,
+      });
+    }
+    if (!confidenceN.ok) {
+      errors.push({
+        kind: "machinery",
+        row: index,
+        field: "confidence",
+        message: `Machinery row ${index + 1} confidence must be a number.`,
+        focusId: null,
+      });
+    }
+    return {
+      ...row,
+      duration_hours: durationN.ok ? durationN.value : row.duration_hours,
+      confidence: confidenceN.ok ? confidenceN.value : row.confidence,
+    };
+  });
+
+  const material_entries = (form?.material_entries || []).map((row, index) => {
+    const qtyN = normaliseMaterialQuantity(row.quantity, { unit: row.unit || "" });
+    const unitCostN = normaliseOptionalNumber(row.unit_cost);
+    const totalCostN = normaliseOptionalNumber(row.total_cost);
+    const confidenceN = normaliseOptionalNumber(row.confidence);
+    if (!qtyN.ok) {
+      errors.push({
+        kind: "material",
+        row: index,
+        field: "quantity",
+        message: `Material row ${index + 1} quantity must be a number.`,
+        focusId: `mat-qty-${index}`,
+      });
+    }
+    if (!unitCostN.ok) {
+      errors.push({
+        kind: "material",
+        row: index,
+        field: "unit_cost",
+        message: `Material row ${index + 1} unit cost must be a number.`,
+        focusId: null,
+      });
+    }
+    if (!totalCostN.ok) {
+      errors.push({
+        kind: "material",
+        row: index,
+        field: "total_cost",
+        message: `Material row ${index + 1} total cost must be a number.`,
+        focusId: null,
+      });
+    }
+    if (!confidenceN.ok) {
+      errors.push({
+        kind: "material",
+        row: index,
+        field: "confidence",
+        message: `Material row ${index + 1} confidence must be a number.`,
+        focusId: null,
+      });
+    }
+    const next = {
+      ...row,
+      quantity: qtyN.ok ? qtyN.quantity : row.quantity,
+      unit: qtyN.ok ? qtyN.unit : row.unit,
+      confidence: confidenceN.ok ? confidenceN.value : row.confidence,
+    };
+    if (Object.prototype.hasOwnProperty.call(row, "unit_cost")) {
+      next.unit_cost = unitCostN.ok ? unitCostN.value : row.unit_cost;
+    }
+    if (Object.prototype.hasOwnProperty.call(row, "total_cost")) {
+      next.total_cost = totalCostN.ok ? totalCostN.value : row.total_cost;
+    }
+    return next;
+  });
+
+  if (errors.length) {
+    return { ok: false, errors, payload: null };
+  }
+
+  const payload = {
+    ...form,
+    labour_entries,
+    machinery_entries,
+    material_entries,
+    ...extra,
+  };
+  return { ok: true, errors: [], payload };
 }
 
 export function buildCompletionForm(data) {

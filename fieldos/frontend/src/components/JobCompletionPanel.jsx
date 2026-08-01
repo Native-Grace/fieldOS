@@ -8,7 +8,6 @@ import {
   buildCompletionForm,
   canFinaliseClient,
   collectLabourValidationMessages,
-  collectMaterialValidationMessages,
   completionHasUnsavedChanges,
   displayLabourHours,
   emptyLabourRow,
@@ -21,8 +20,8 @@ import {
   labourFieldErrors,
   materialFieldErrors,
   needsOverrideReason,
-  parseMaterialQuantityRowError,
-  normaliseMaterialQuantity,
+  parseCompletionNumericFieldError,
+  buildCompletionSavePayload,
   upsertBreakWarningResolution,
   warningKey,
 } from "../jobCompletionHelpers.mjs";
@@ -133,6 +132,28 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
     });
   }
 
+  function focusCompletionField(focusId) {
+    if (!focusId || typeof document === "undefined") return;
+    const el = document.getElementById(focusId);
+    if (!el) return;
+    try {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      el.focus();
+    } catch {
+      /* ignore focus failures */
+    }
+  }
+
+  function applyNumericValidationFailure(message, focusId = null) {
+    setShowFieldErrors(true);
+    const parsed = parseCompletionNumericFieldError(message);
+    if (parsed?.kind === "material") {
+      setMaterialErrorRow(parsed.row);
+    }
+    setError(String(message || "Validation failed"));
+    focusCompletionField(focusId || parsed?.focusId || null);
+  }
+
   async function runAction(path, method, body, options = {}) {
     if (busy) return;
     setBusy(true);
@@ -156,13 +177,8 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
         setNeedsReload(true);
         setError("This completion changed. Reload the latest version before saving.");
       } else if (err instanceof ApiError && err.status === 422) {
-        const rowIdx = parseMaterialQuantityRowError(err.message);
-        if (rowIdx != null) {
-          setMaterialErrorRow(rowIdx);
-          setShowFieldErrors(true);
-        }
-        // Keep all unsaved edits; do not regenerate.
-        setError(String(err.message || err));
+        // Keep all unsaved edits; do not reload or regenerate; leave expected_version alone.
+        applyNumericValidationFailure(err.message);
       } else {
         setError(String(err.message || err));
       }
@@ -196,31 +212,22 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
   }
 
   async function saveDraft(extra = {}) {
-    const materialMessages = collectMaterialValidationMessages(form);
-    if (materialMessages.length) {
-      setShowFieldErrors(true);
-      const first = parseMaterialQuantityRowError(materialMessages[0]);
-      setMaterialErrorRow(first);
-      setError(materialMessages.join(" "));
-      return;
-    }
     if (needsReload) {
       setError("This completion changed. Reload the latest version before saving.");
       return;
     }
-    await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion`, "PATCH", {
-      ...form,
-      material_entries: (form.material_entries || []).map((row) => {
-        const n = normaliseMaterialQuantity(row.quantity, { unit: row.unit || "" });
-        return {
-          ...row,
-          quantity: n.ok ? n.quantity : row.quantity,
-          unit: n.ok ? n.unit : row.unit,
-        };
-      }),
+    const built = buildCompletionSavePayload(form, {
       expected_version: completion?.version,
       ...extra,
     });
+    if (!built.ok) {
+      const first = built.errors[0];
+      applyNumericValidationFailure(first.message, first.focusId);
+      setError(built.errors.map((e) => e.message).join(" "));
+      // Retain every local form value — do not call API / Apps Script.
+      return;
+    }
+    await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion`, "PATCH", built.payload);
   }
 
   async function markReady() {

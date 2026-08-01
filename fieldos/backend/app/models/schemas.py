@@ -3,7 +3,13 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+
+from app.services.completion_math import (
+    coerce_float_default,
+    coerce_optional_float,
+    normalise_material_quantity,
+)
 
 
 class ErrorBody(BaseModel):
@@ -130,6 +136,22 @@ class LabourEntry(BaseModel):
     updated_at: Optional[Union[datetime, str]] = None
     confidence: Optional[float] = None
 
+    @field_validator("break_minutes", "travel_minutes", mode="before")
+    @classmethod
+    def _coerce_labour_required_floats(cls, value: Any) -> float:
+        try:
+            return coerce_float_default(value, 0.0)
+        except ValueError as exc:
+            raise ValueError("must be a number") from exc
+
+    @field_validator("labour_hours", "travel_hours", "confidence", mode="before")
+    @classmethod
+    def _coerce_labour_optional_floats(cls, value: Any) -> Optional[float]:
+        try:
+            return coerce_optional_float(value)
+        except ValueError as exc:
+            raise ValueError("must be a number") from exc
+
 
 class MachineryEntry(BaseModel):
     machinery_entry_id: Optional[str] = None
@@ -149,6 +171,14 @@ class MachineryEntry(BaseModel):
     updated_at: Optional[Union[datetime, str]] = None
     confidence: Optional[float] = None
 
+    @field_validator("duration_hours", "confidence", mode="before")
+    @classmethod
+    def _coerce_machinery_optional_floats(cls, value: Any) -> Optional[float]:
+        try:
+            return coerce_optional_float(value)
+        except ValueError as exc:
+            raise ValueError("must be a number") from exc
+
 
 class MaterialEntry(BaseModel):
     material_entry_id: Optional[str] = None
@@ -166,6 +196,28 @@ class MaterialEntry(BaseModel):
     created_at: Optional[Union[datetime, str]] = None
     updated_at: Optional[Union[datetime, str]] = None
     confidence: Optional[float] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_material_quantity_and_unit(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        unit_in = str(out.get("unit") or "")
+        normalised = normalise_material_quantity(out.get("quantity"), unit=unit_in)
+        if not normalised.get("ok"):
+            raise ValueError("must be a number")
+        out["quantity"] = normalised.get("quantity")
+        out["unit"] = str(normalised.get("unit") or unit_in)
+        return out
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_material_confidence(cls, value: Any) -> Optional[float]:
+        try:
+            return coerce_optional_float(value)
+        except ValueError as exc:
+            raise ValueError("must be a number") from exc
 
 
 class JobCompletionOut(BaseModel):
@@ -244,6 +296,42 @@ class CompletionUpdateRequest(BaseModel):
     total_machinery_hours: Optional[float] = None
     billable_labour_hours: Optional[float] = None
     non_billable_labour_hours: Optional[float] = None
+
+    @field_validator(
+        "total_labour_hours",
+        "total_travel_hours",
+        "total_machinery_hours",
+        "billable_labour_hours",
+        "non_billable_labour_hours",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_update_optional_floats(cls, value: Any) -> Optional[float]:
+        try:
+            return coerce_optional_float(value)
+        except ValueError as exc:
+            raise ValueError("must be a number") from exc
+
+    @field_validator("expected_version", mode="before")
+    @classmethod
+    def _coerce_expected_version(cls, value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, bool):
+            raise ValueError("must be a number")
+        try:
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            s = str(value).strip()
+            if not s:
+                return None
+            return int(s)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("must be a number") from exc
 
 
 class CompletionGenerateRequest(BaseModel):
