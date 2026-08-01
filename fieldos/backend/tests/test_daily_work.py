@@ -8,6 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.services.daily_work_math import (
@@ -481,3 +482,281 @@ def test_return_to_review_rejects_non_create_failed(tmp_path: Path, monkeypatch)
     )
     assert resp.status_code == 409
     assert "CreateFailed" in resp.json()["detail"]
+
+
+def test_resolve_completed_job_sheet_id_order() -> None:
+    from app.services.daily_work_math import resolve_completed_job_sheet_id
+
+    assert (
+        resolve_completed_job_sheet_id({"job_sheet_id": "JS-TOP", "job": {"job_sheet_id": "JS-JOB"}})
+        == "JS-TOP"
+    )
+    assert resolve_completed_job_sheet_id({"job": {"job_sheet_id": "JS-JOB"}}) == "JS-JOB"
+    assert (
+        resolve_completed_job_sheet_id({"data": {"job_sheet_id": "JS-DATA"}}) == "JS-DATA"
+    )
+    assert (
+        resolve_completed_job_sheet_id({"data": {"job": {"job_sheet_id": "JS-DJ"}}}) == "JS-DJ"
+    )
+    assert (
+        resolve_completed_job_sheet_id(
+            {"record_id": "JS-REC"},
+            action="create_completed_job_sheet_from_recordings",
+        )
+        == "JS-REC"
+    )
+    # Legacy record_id must not apply to unrelated actions.
+    assert (
+        resolve_completed_job_sheet_id(
+            {"record_id": "JS-REC", "action": "list_jobs_for_staff"},
+            action="list_jobs_for_staff",
+        )
+        == ""
+    )
+    # Unrelated IDs are ignored.
+    assert resolve_completed_job_sheet_id({"work_session_id": "DWS-1", "link_id": "JRL-1"}) == ""
+
+
+@pytest.mark.asyncio
+async def test_create_missing_id_reconcile_found(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_MODE", "apps_script")
+    monkeypatch.setenv("DAILY_WORK_SESSIONS_DIR", str(tmp_path / "dws-reconcile"))
+    monkeypatch.setenv("JWT_SECRET", "test-secret-daily-work-xxxxxxxx")
+    from app.core.config import get_settings
+    from app.services.daily_work import DailyWorkService
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    svc = DailyWorkService(settings)
+
+    class FakeAS:
+        def __init__(self) -> None:
+            self.create_calls = 0
+            self.reconcile_calls = 0
+
+        async def create_completed_job_sheet_from_recordings(self, body):
+            self.create_calls += 1
+            # Simulate legacy broken Success envelope (no job_sheet_id).
+            return {
+                "status": "Success",
+                "action": None,
+                "message": None,
+                "record_id": None,
+                "timestamp": "2026-08-01T00:00:00Z",
+            }
+
+        async def get_completed_job_sheet_create_result(self, body):
+            self.reconcile_calls += 1
+            assert body["work_session_id"]
+            assert body["idempotency_key"]
+            return {
+                "status": "Success",
+                "job_sheet_id": "JS-RECONCILED",
+                "record_id": "JS-RECONCILED",
+                "data": {
+                    "found": True,
+                    "job_sheet_id": "JS-RECONCILED",
+                    "payload_hash": body.get("payload_hash") or "",
+                    "work_session_id": body["work_session_id"],
+                    "job": {"job_sheet_id": "JS-RECONCILED"},
+                },
+            }
+
+    fake = FakeAS()
+    svc.apps_script = fake
+
+    # Seed a ReviewRequired session via store.
+    from app.services.daily_work_math import empty_extraction, payload_hash
+
+    wid = "DWS-RECON-1"
+    job = {
+        "customer_name": "Acme",
+        "project_name": "Acme",
+        "project_id": "PROJ-1",
+        "work_date": "2026-08-01",
+        "staff_ids": ["STAFF-DEMO001"],
+        "staff_names": ["Alex Technician"],
+        "work_completed": [{"text": "Pruned hedges", "recording_ids": ["R1"]}],
+        "materials_used": [],
+        "equipment_used": [],
+        "hours_or_times": [],
+        "site_conditions": [],
+        "issues_found": [],
+        "client_requests": [],
+        "follow_up_required": [],
+        "safety_notes": [],
+        "manager_notes": "WORK COMPLETED\n- Pruned hedges",
+        "completion_summary": "Done",
+        "site_address": "",
+    }
+    extraction = empty_extraction(wid, "2026-08-01")
+    extraction["job_sheet"] = job
+    row = {
+        "work_session_id": wid,
+        "work_date": "2026-08-01",
+        "staff_ids": ["STAFF-DEMO001"],
+        "staff_names": ["Alex Technician"],
+        "project_id": "PROJ-1",
+        "project_name": "Acme",
+        "customer_name": "Acme",
+        "status": "ReviewRequired",
+        "recordings": [
+            {
+                "recording_id": "R1",
+                "status": "Processed",
+                "sequence": 1,
+                "transcript": "pruned",
+            }
+        ],
+        "extraction": extraction,
+        "version": 1,
+        "created_by": "STAFF-DEMO001",
+    }
+    svc.store.save(row)
+    key = "idem-recon-1"
+    # Patch reconcile to include matching payload hash after create returns empty.
+    async def reconcile_with_hash(body):
+        fake.reconcile_calls += 1
+        return {
+            "status": "Success",
+            "job_sheet_id": "JS-RECONCILED",
+            "data": {
+                "found": True,
+                "job_sheet_id": "JS-RECONCILED",
+                "payload_hash": payload_hash(job, wid),
+                "work_session_id": wid,
+                "job": {"job_sheet_id": "JS-RECONCILED"},
+            },
+        }
+
+    fake.get_completed_job_sheet_create_result = reconcile_with_hash
+
+    out = await svc.create_job_sheet(
+        wid,
+        staff_id="STAFF-DEMO001",
+        staff_name="Alex Technician",
+        actor_role="staff",
+        expected_session_version=1,
+        reviewed_job_sheet=job,
+        idempotency_key=key,
+    )
+    assert out["session"]["status"] == "JobCreated"
+    assert out["job"]["job_sheet_id"] == "JS-RECONCILED"
+    assert out["idempotent"] is True
+    assert fake.create_calls == 1
+    assert fake.reconcile_calls == 1
+
+    # Second create must not fire automatically from reconcile path; idempotency short-circuits.
+    out2 = await svc.create_job_sheet(
+        wid,
+        staff_id="STAFF-DEMO001",
+        staff_name="Alex Technician",
+        actor_role="staff",
+        expected_session_version=out["session"]["version"],
+        reviewed_job_sheet=job,
+        idempotency_key=key,
+    )
+    assert out2["idempotent"] is True
+    assert fake.create_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_create_missing_id_reconcile_missing_marks_create_failed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATA_MODE", "apps_script")
+    monkeypatch.setenv("DAILY_WORK_SESSIONS_DIR", str(tmp_path / "dws-missing"))
+    monkeypatch.setenv("JWT_SECRET", "test-secret-daily-work-xxxxxxxx")
+    from app.core.config import get_settings
+    from app.services.daily_work import DailyWorkService
+    from app.services.daily_work_math import empty_extraction
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    svc = DailyWorkService(settings)
+
+    class FakeAS:
+        def __init__(self) -> None:
+            self.create_calls = 0
+
+        async def create_completed_job_sheet_from_recordings(self, body):
+            self.create_calls += 1
+            return {"status": "Success", "message": "Completed job sheet created"}
+
+        async def get_completed_job_sheet_create_result(self, body):
+            return {
+                "status": "Success",
+                "data": {"found": False, "job_sheet_id": "", "payload_hash": "", "job": None},
+            }
+
+    fake = FakeAS()
+    svc.apps_script = fake
+    wid = "DWS-MISS-1"
+    job = {
+        "customer_name": "Acme",
+        "project_name": "Acme",
+        "project_id": "PROJ-1",
+        "work_date": "2026-08-01",
+        "staff_ids": ["STAFF-DEMO001"],
+        "staff_names": ["Alex Technician"],
+        "work_completed": [{"text": "Pruned hedges", "recording_ids": ["R1"]}],
+        "materials_used": [],
+        "equipment_used": [],
+        "hours_or_times": [],
+        "site_conditions": [],
+        "issues_found": [],
+        "client_requests": [],
+        "follow_up_required": [],
+        "safety_notes": [],
+        "manager_notes": "WORK COMPLETED\n- Pruned hedges",
+        "completion_summary": "Done",
+        "site_address": "",
+    }
+    extraction = empty_extraction(wid, "2026-08-01")
+    extraction["job_sheet"] = job
+    svc.store.save(
+        {
+            "work_session_id": wid,
+            "work_date": "2026-08-01",
+            "staff_ids": ["STAFF-DEMO001"],
+            "staff_names": ["Alex Technician"],
+            "project_id": "PROJ-1",
+            "status": "ReviewRequired",
+            "recordings": [{"recording_id": "R1", "status": "Processed", "sequence": 1}],
+            "extraction": extraction,
+            "version": 1,
+            "created_by": "STAFF-DEMO001",
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await svc.create_job_sheet(
+            wid,
+            staff_id="STAFF-DEMO001",
+            staff_name="Alex Technician",
+            actor_role="staff",
+            expected_session_version=1,
+            reviewed_job_sheet=job,
+            idempotency_key="idem-miss-1",
+        )
+    assert exc.value.status_code == 502
+    assert "job_sheet_id" in str(exc.value.detail)
+    saved = svc.store.get(wid)
+    assert saved["status"] == "CreateFailed"
+    assert saved["create_failure_code"] == "missing_job_sheet_id"
+    assert fake.create_calls == 1
+    # No automatic second create.
+    assert fake.create_calls == 1
+
+
+def test_parse_top_level_and_nested_job_ids() -> None:
+    from app.services.daily_work_math import (
+        extract_completed_job_payload,
+        resolve_completed_job_sheet_id,
+    )
+
+    nested = {
+        "status": "Success",
+        "data": {"job": {"job_sheet_id": "JS-NEST", "processing_status": "Completed"}},
+    }
+    assert resolve_completed_job_sheet_id(nested) == "JS-NEST"
+    assert extract_completed_job_payload(nested)["job_sheet_id"] == "JS-NEST"

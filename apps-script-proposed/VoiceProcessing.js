@@ -9,6 +9,7 @@
  * legacy AppSheet rows may use transcription + audio_file / file_path.
  *
  * Recording loop skips status === "Invalid" and already Processed+transcript rows.
+ * Usable transcript/transcription text skips the transcription API (no re-Whisper).
  */
 
 /**
@@ -41,6 +42,7 @@ function fieldosVpGetTranscriptText_(recording) {
 
 /**
  * Skip Whisper when already Processed with non-empty transcript text.
+ * Saved (or other) status alone is never enough — see fieldosVpHasUsableTranscript_.
  * @param {object} recording
  * @returns {boolean}
  */
@@ -48,6 +50,16 @@ function fieldosVpIsRecordingComplete_(recording) {
   if (!recording) return false;
   const status = String(recording.status == null ? "" : recording.status).trim();
   if (status !== "Processed") return false;
+  return fieldosVpGetTranscriptText_(recording) !== "";
+}
+
+/**
+ * True when transcript or transcription already has usable (trimmed) text.
+ * Used to skip the transcription API without requiring status === Processed.
+ * @param {object} recording
+ * @returns {boolean}
+ */
+function fieldosVpHasUsableTranscript_(recording) {
   return fieldosVpGetTranscriptText_(recording) !== "";
 }
 
@@ -808,6 +820,29 @@ var VoiceProcessingService = {
         continue;
       }
 
+      // Usable existing text → skip API; promote to Processed for job aggregate.
+      // Status "Saved" alone does not skip (no text → still transcribe).
+      if (fieldosVpHasUsableTranscript_(recording)) {
+        const existingText = fieldosVpGetTranscriptText_(recording);
+        Logger.log(
+          "Recording " + recordingId + " has existing transcript text. Skipping OpenAI call."
+        );
+        try {
+          this._updateRowValue(
+            ss,
+            "tbl_recordings",
+            recording._sheetRowIndex,
+            fieldosVpBuildTranscriptWriteback_(existingText)
+          );
+          recording.transcript = existingText;
+          recording.transcription = existingText;
+          recording.status = "Processed";
+        } catch (err) {
+          throw fieldosVpWrapRecordingError_(recordingId, err);
+        }
+        continue;
+      }
+
       Logger.log("Transcribing Recording ID: " + recordingId + " via OpenAI Whisper");
 
       try {
@@ -926,7 +961,16 @@ var VoiceProcessingService = {
 /**
  * Queue worker entry point (compatibility facade).
  * Queue.processNext passes a full tbl_job_sheets row.
- * Phase 3A: Whisper → ai_transcript → GPT structured summary → job writeback → Completed.
+ *
+ * Minimal contract:
+ * - validate jobRow / job_sheet_id
+ * - call VoiceProcessingService.processJobSheetRecordings
+ * - fail on NO_RECORDINGS / null / undefined / blank aggregate
+ * - on success: processing_status=Completed, processing_error=""
+ * - return aggregated transcript; rethrow service/repository errors
+ *
+ * Phase 3A (additional): Whisper aggregate → ai_transcript → GPT structured
+ * summary writeback → Completed (same success path).
  */
 var VoiceProcessing = {
   /**

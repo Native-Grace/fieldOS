@@ -14,6 +14,7 @@ from app.core.logging import get_logger, log_extra
 from app.core.roles import is_manager_or_admin, normalize_role
 from app.services import openai_http
 from app.services.daily_work_math import (
+    CREATE_COMPLETED_JOB_ACTION,
     DAILY_WORK_EXTRACTION_SYSTEM_PROMPT,
     DEFAULT_MAX_RECORDINGS,
     PROCESSING_TYPE,
@@ -33,9 +34,15 @@ from app.services.daily_work_math import (
     aggregate_transcripts,
     build_sheet_job_fields,
     coerce_extraction,
+    dict_keys,
     empty_extraction,
     empty_job_sheet,
+    extract_completed_create_idempotent,
+    extract_completed_create_links,
+    extract_completed_job_payload,
+    parse_completed_job_create_lookup,
     payload_hash,
+    resolve_completed_job_sheet_id,
     sort_recordings,
     sydney_today,
     trim_text,
@@ -651,40 +658,58 @@ class DailyWorkService:
             )
             raise HTTPException(status_code=502, detail=f"Create job failed: {exc}") from exc
 
-        job = result.get("job") or {}
-        job_sheet_id = trim_text(job.get("job_sheet_id"))
+        self._log_create_response_shape(result)
+        job_sheet_id = resolve_completed_job_sheet_id(
+            result, action=CREATE_COMPLETED_JOB_ACTION
+        )
+        job = extract_completed_job_payload(result)
+        links = extract_completed_create_links(result)
+        idempotent = extract_completed_create_idempotent(result)
+
         if not job_sheet_id:
+            # Never auto-issue a second create — reconcile create-key table only.
+            reconciled = await self._reconcile_missing_job_sheet_id(
+                row,
+                staff_id=staff_id,
+                idempotency_key=key,
+                payload_hash_value=hash_now,
+                reviewed_job_sheet=reviewed_job_sheet,
+            )
+            if reconciled is not None:
+                return reconciled
             row["status"] = STATUS_CREATE_FAILED
             row["failure_reason"] = "Create did not return job_sheet_id."
             row["create_failure_reason"] = row["failure_reason"]
             row["create_failure_code"] = "missing_job_sheet_id"
+            extraction = row.get("extraction") or empty_extraction(
+                work_session_id, row.get("work_date") or ""
+            )
+            extraction["job_sheet"] = reviewed_job_sheet
+            row["extraction"] = extraction
             row["version"] = int(row.get("version") or 1) + 1
             self.store.save(row)
+            self.store.append_audit(
+                row,
+                {
+                    "event": "create_failed",
+                    "by": staff_id,
+                    "code": "missing_job_sheet_id",
+                    "reconcile": "not_found",
+                },
+            )
             raise HTTPException(status_code=502, detail="Create did not return job_sheet_id.")
 
-        now = datetime.now(timezone.utc).isoformat()
-        row["created_job_sheet_id"] = job_sheet_id
-        row["status"] = STATUS_JOB_CREATED
-        row["idempotency_key"] = key
-        row["idempotency_payload_hash"] = hash_now
-        row["failure_reason"] = ""
-        row["create_failure_reason"] = ""
-        row["create_failure_code"] = ""
-        row["version"] = int(row.get("version") or 1) + 1
-        # Persist final reviewed sheet into extraction for audit
-        extraction = row.get("extraction") or empty_extraction(work_session_id, row.get("work_date") or "")
-        extraction["job_sheet"] = reviewed_job_sheet
-        row["extraction"] = extraction
-        self.store.save(row)
-        self.store.append_audit(
-            row, {"event": "job_created", "by": staff_id, "job_sheet_id": job_sheet_id, "at": now}
+        return self._mark_job_created(
+            row,
+            staff_id=staff_id,
+            job_sheet_id=job_sheet_id,
+            job=job or {"job_sheet_id": job_sheet_id},
+            links=links,
+            idempotent=idempotent,
+            idempotency_key=key,
+            payload_hash_value=hash_now,
+            reviewed_job_sheet=reviewed_job_sheet,
         )
-        return {
-            "job": job,
-            "session": self._public(row),
-            "links": result.get("links") or [],
-            "idempotent": bool(result.get("idempotent")),
-        }
 
     def return_to_review(
         self,
@@ -736,6 +761,184 @@ class DailyWorkService:
             "idempotent": True,
         }
 
+    def _log_create_response_shape(self, result: Any) -> None:
+        """Log key names only — never transcripts or reviewed job content."""
+        if not isinstance(result, dict):
+            log_extra(logger, 30, "Daily Work create response non-dict", result_type=type(result).__name__)
+            return
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        job = result.get("job") if isinstance(result.get("job"), dict) else {}
+        if not job and isinstance(data.get("job"), dict):
+            job = data.get("job") or {}
+        log_extra(
+            logger,
+            20,
+            "Daily Work create response keys",
+            action=CREATE_COMPLETED_JOB_ACTION,
+            top_level_keys=dict_keys(result),
+            data_keys=dict_keys(data),
+            job_keys=dict_keys(job),
+            has_record_id=bool(trim_text(result.get("record_id"))),
+            has_job_sheet_id=bool(
+                trim_text(result.get("job_sheet_id"))
+                or trim_text(job.get("job_sheet_id"))
+                or trim_text(data.get("job_sheet_id"))
+            ),
+            apps_status=trim_text(result.get("status")),
+            apps_message=trim_text(result.get("message"))[:120],
+        )
+
+    def _mark_job_created(
+        self,
+        row: dict[str, Any],
+        *,
+        staff_id: str,
+        job_sheet_id: str,
+        job: dict[str, Any],
+        links: list[Any],
+        idempotent: bool,
+        idempotency_key: str,
+        payload_hash_value: str,
+        reviewed_job_sheet: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        work_session_id = trim_text(row.get("work_session_id"))
+        row["created_job_sheet_id"] = job_sheet_id
+        row["status"] = STATUS_JOB_CREATED
+        row["idempotency_key"] = idempotency_key
+        row["idempotency_payload_hash"] = payload_hash_value
+        row["failure_reason"] = ""
+        row["create_failure_reason"] = ""
+        row["create_failure_code"] = ""
+        row["version"] = int(row.get("version") or 1) + 1
+        extraction = row.get("extraction") or empty_extraction(
+            work_session_id, row.get("work_date") or ""
+        )
+        extraction["job_sheet"] = reviewed_job_sheet
+        row["extraction"] = extraction
+        self.store.save(row)
+        self.store.append_audit(
+            row,
+            {
+                "event": "job_created",
+                "by": staff_id,
+                "job_sheet_id": job_sheet_id,
+                "at": now,
+                "idempotent": bool(idempotent),
+            },
+        )
+        out_job = dict(job) if isinstance(job, dict) else {}
+        if not trim_text(out_job.get("job_sheet_id")):
+            out_job["job_sheet_id"] = job_sheet_id
+        return {
+            "job": out_job,
+            "session": self._public(row),
+            "links": links if isinstance(links, list) else [],
+            "idempotent": bool(idempotent),
+        }
+
+    async def _reconcile_missing_job_sheet_id(
+        self,
+        row: dict[str, Any],
+        *,
+        staff_id: str,
+        idempotency_key: str,
+        payload_hash_value: str,
+        reviewed_job_sheet: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        """Look up tbl_daily_work_create_keys after a success response without an ID.
+
+        Never issues a second create automatically.
+        """
+        mode = (self.settings.data_mode or "mock").strip().lower()
+        if mode != "apps_script" or self.apps_script is None:
+            return None
+        work_session_id = trim_text(row.get("work_session_id"))
+        try:
+            lookup_raw = await self.apps_script.get_completed_job_sheet_create_result(
+                {
+                    "work_session_id": work_session_id,
+                    "idempotency_key": idempotency_key,
+                    "staff_id": staff_id,
+                    "actor_staff_id": staff_id,
+                    "actor_role": "staff",
+                }
+            )
+        except Exception as exc:
+            log_extra(
+                logger,
+                40,
+                "Daily Work create reconcile failed",
+                work_session_id=work_session_id,
+                error=type(exc).__name__,
+            )
+            return None
+
+        data = lookup_raw.get("data") if isinstance(lookup_raw, dict) else {}
+        log_extra(
+            logger,
+            20,
+            "Daily Work create reconcile keys",
+            top_level_keys=dict_keys(lookup_raw),
+            data_keys=dict_keys(data),
+            has_job_sheet_id=bool(
+                trim_text((lookup_raw or {}).get("job_sheet_id"))
+                if isinstance(lookup_raw, dict)
+                else False
+            ),
+            has_record_id=bool(
+                trim_text((lookup_raw or {}).get("record_id"))
+                if isinstance(lookup_raw, dict)
+                else False
+            ),
+        )
+        parsed = parse_completed_job_create_lookup(lookup_raw)
+        if not parsed.get("found") or not parsed.get("job_sheet_id"):
+            return None
+
+        prior_hash = trim_text(parsed.get("payload_hash"))
+        if prior_hash and prior_hash != payload_hash_value:
+            row["status"] = STATUS_CREATE_FAILED
+            row["failure_reason"] = (
+                "Create response missing job_sheet_id; reconcile found conflicting payload_hash."
+            )
+            row["create_failure_reason"] = row["failure_reason"]
+            row["create_failure_code"] = "reconcile_hash_conflict"
+            row["version"] = int(row.get("version") or 1) + 1
+            self.store.save(row)
+            self.store.append_audit(
+                row,
+                {
+                    "event": "create_failed",
+                    "by": staff_id,
+                    "code": "reconcile_hash_conflict",
+                },
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="Conflict: idempotency key reused with a different reviewed payload.",
+            )
+
+        self.store.append_audit(
+            row,
+            {
+                "event": "create_reconciled",
+                "by": staff_id,
+                "job_sheet_id": parsed["job_sheet_id"],
+            },
+        )
+        return self._mark_job_created(
+            row,
+            staff_id=staff_id,
+            job_sheet_id=parsed["job_sheet_id"],
+            job=parsed.get("job") or {"job_sheet_id": parsed["job_sheet_id"]},
+            links=[],
+            idempotent=True,
+            idempotency_key=idempotency_key,
+            payload_hash_value=payload_hash_value,
+            reviewed_job_sheet=reviewed_job_sheet,
+        )
+
     def _mock_create(self, body: dict[str, Any]) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
         job_sheet_id = f"JS-{uuid.uuid4().hex[:8].upper()}"
@@ -766,7 +969,23 @@ class DailyWorkService:
                     "created_by": body.get("created_by"),
                 }
             )
-        return {"job": job, "links": links, "idempotent": False}
+        # Mirror Apps Script success contract (top-level + nested).
+        return {
+            "status": "Success",
+            "message": "Completed job sheet created",
+            "job_sheet_id": job_sheet_id,
+            "record_id": job_sheet_id,
+            "job": job,
+            "links": links,
+            "idempotent": False,
+            "data": {
+                "job_sheet_id": job_sheet_id,
+                "record_id": job_sheet_id,
+                "job": job,
+                "links": links,
+                "idempotent": False,
+            },
+        }
 
     async def _transcribe(self, recording: dict[str, Any]) -> str:
         mode = (self.settings.data_mode or "mock").strip().lower()

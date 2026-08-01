@@ -20,11 +20,24 @@ var FIELDOS_DELIVERY_HEADERS_ = [
   "sent_at",
   "failed_at",
   "failure_reason",
+  "failure_code",
   "checksum",
   "template_version",
   "supersedes_delivery_id",
   "idempotency_key",
+  "provider_name",
+  "provider_message_id",
   "drive_file_id",
+  "drive_provider",
+  "drive_folder_id",
+  "drive_filename",
+  "drive_mime_type",
+  "drive_web_view_link",
+  "drive_created_at",
+  "drive_checksum",
+  "drive_status",
+  "email_status",
+  "completion_status",
   "attachment_ids_json",
   "subject",
   "body_preview",
@@ -119,11 +132,25 @@ var FieldOSDocumentDelivery = {
       sent_at: r.sent_at || null,
       failed_at: r.failed_at || null,
       failure_reason: String(r.failure_reason || ""),
+      failure_code: String(r.failure_code || ""),
       checksum: String(r.checksum || ""),
       template_version: String(r.template_version || FIELDOS_DELIVERY_TEMPLATE_VERSION_),
       supersedes_delivery_id: String(r.supersedes_delivery_id || ""),
       idempotency_key: String(r.idempotency_key || ""),
+      provider_name: String(r.provider_name || ""),
+      provider_message_id: String(r.provider_message_id || ""),
       file_drive: !!String(r.drive_file_id || ""),
+      drive_provider: String(r.drive_provider || ""),
+      drive_file_id: String(r.drive_file_id || ""),
+      drive_folder_id: String(r.drive_folder_id || ""),
+      drive_filename: String(r.drive_filename || ""),
+      drive_mime_type: String(r.drive_mime_type || ""),
+      drive_web_view_link: String(r.drive_web_view_link || ""),
+      drive_created_at: r.drive_created_at || null,
+      drive_checksum: String(r.drive_checksum || ""),
+      drive_status: String(r.drive_status || ""),
+      email_status: String(r.email_status || ""),
+      completion_status: String(r.completion_status || r.status || ""),
       attachment_ids: ids,
       subject: String(r.subject || ""),
       body_preview: String(r.body_preview || ""),
@@ -149,7 +176,11 @@ var FieldOSDocumentDelivery = {
         statuses: [
           FIELDOS_DELIVERY_STATUSES_.DRAFT,
           FIELDOS_DELIVERY_STATUSES_.READY,
+          FIELDOS_DELIVERY_STATUSES_.PROCESSING,
           FIELDOS_DELIVERY_STATUSES_.SENT,
+          FIELDOS_DELIVERY_STATUSES_.FILED,
+          FIELDOS_DELIVERY_STATUSES_.COMPLETED,
+          FIELDOS_DELIVERY_STATUSES_.PARTIALLY_FAILED,
           FIELDOS_DELIVERY_STATUSES_.FAILED,
           FIELDOS_DELIVERY_STATUSES_.CANCELLED,
           FIELDOS_DELIVERY_STATUSES_.SUPERSEDED
@@ -280,9 +311,10 @@ var FieldOSDocumentDelivery = {
     var status = String(row.status || "");
     if (
       status !== FIELDOS_DELIVERY_STATUSES_.DRAFT &&
-      status !== FIELDOS_DELIVERY_STATUSES_.FAILED
+      status !== FIELDOS_DELIVERY_STATUSES_.FAILED &&
+      status !== FIELDOS_DELIVERY_STATUSES_.PARTIALLY_FAILED
     ) {
-      throw new Error("Validation Error: Only Draft or Failed deliveries can be edited.");
+      throw new Error("Validation Error: Only Draft, Failed, or PartiallyFailed deliveries can be edited.");
     }
     var patch = { version: (Number(row.version) || 1) + 1 };
     if (Object.prototype.hasOwnProperty.call(p, "recipient_email")) {
@@ -349,10 +381,14 @@ var FieldOSDocumentDelivery = {
       p.checksum != null && p.checksum !== "" ? p.checksum : row.checksum || ""
     );
 
-    // Idempotent success: same delivery + key + Sent → return original (no version bump).
+    // Idempotent success: same delivery + key + terminal success → return original.
+    var terminalOk = {};
+    terminalOk[FIELDOS_DELIVERY_STATUSES_.SENT] = true;
+    terminalOk[FIELDOS_DELIVERY_STATUSES_.FILED] = true;
+    terminalOk[FIELDOS_DELIVERY_STATUSES_.COMPLETED] = true;
     if (
-      String(row.status) === FIELDOS_DELIVERY_STATUSES_.SENT &&
-      nextStatus === FIELDOS_DELIVERY_STATUSES_.SENT &&
+      terminalOk[String(row.status)] &&
+      terminalOk[nextStatus] &&
       nextKey &&
       String(row.idempotency_key || "") === nextKey
     ) {
@@ -368,15 +404,15 @@ var FieldOSDocumentDelivery = {
       };
     }
 
-    // Same key with a different Sent payload / another Sent row → 409.
-    if (nextStatus === FIELDOS_DELIVERY_STATUSES_.SENT && nextKey) {
+    // Same key with a different success payload / another success row → 409.
+    if (terminalOk[nextStatus] && nextKey) {
       if (
-        String(row.status) === FIELDOS_DELIVERY_STATUSES_.SENT &&
+        terminalOk[String(row.status)] &&
         String(row.idempotency_key || "") &&
         String(row.idempotency_key || "") !== nextKey
       ) {
         throw new Error(
-          "Conflict: delivery already Sent with a different idempotency key."
+          "Conflict: delivery already completed with a different idempotency key."
         );
       }
       var others = DB.findWhere("tbl_document_deliveries", {}) || [];
@@ -384,7 +420,7 @@ var FieldOSDocumentDelivery = {
         var other = others[i];
         if (String(other.delivery_id) === id) continue;
         if (
-          String(other.status) === FIELDOS_DELIVERY_STATUSES_.SENT &&
+          terminalOk[String(other.status)] &&
           String(other.idempotency_key || "") === nextKey
         ) {
           throw new Error(
@@ -404,18 +440,58 @@ var FieldOSDocumentDelivery = {
       version: (Number(row.version) || 1) + 1
     };
 
-    if (p.clear_failure === true || p.clear_failure === "true" || nextStatus === FIELDOS_DELIVERY_STATUSES_.SENT) {
+    if (
+      p.clear_failure === true ||
+      p.clear_failure === "true" ||
+      nextStatus === FIELDOS_DELIVERY_STATUSES_.SENT ||
+      nextStatus === FIELDOS_DELIVERY_STATUSES_.FILED ||
+      nextStatus === FIELDOS_DELIVERY_STATUSES_.COMPLETED
+    ) {
       patch.failure_reason = "";
+      patch.failure_code = "";
       patch.failed_at = "";
     } else if (Object.prototype.hasOwnProperty.call(p, "failure_reason")) {
       patch.failure_reason = String(p.failure_reason || "");
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(p, "failure_code") &&
+      nextStatus !== FIELDOS_DELIVERY_STATUSES_.SENT &&
+      nextStatus !== FIELDOS_DELIVERY_STATUSES_.FILED &&
+      nextStatus !== FIELDOS_DELIVERY_STATUSES_.COMPLETED
+    ) {
+      patch.failure_code = String(p.failure_code || "");
     }
 
     if (p.sent_at) patch.sent_at = p.sent_at;
     if (p.sent_by) patch.sent_by = String(p.sent_by);
     if (p.failed_at) patch.failed_at = p.failed_at;
-    // drive_file_id only when a real private provider returns one — never URLs.
+    // Provider metadata only — never tokens, raw responses, or PDF/email bodies.
+    if (Object.prototype.hasOwnProperty.call(p, "provider_name")) {
+      patch.provider_name = String(p.provider_name || "");
+    }
+    if (Object.prototype.hasOwnProperty.call(p, "provider_message_id")) {
+      patch.provider_message_id = String(p.provider_message_id || "");
+    }
+    // drive_file_id only when a real private provider returns one — never credentials.
     if (p.drive_file_id) patch.drive_file_id = String(p.drive_file_id);
+    var driveMetaKeys = [
+      "drive_provider",
+      "drive_folder_id",
+      "drive_filename",
+      "drive_mime_type",
+      "drive_web_view_link",
+      "drive_created_at",
+      "drive_checksum",
+      "drive_status",
+      "email_status",
+      "completion_status"
+    ];
+    for (var di = 0; di < driveMetaKeys.length; di++) {
+      var dk = driveMetaKeys[di];
+      if (Object.prototype.hasOwnProperty.call(p, dk)) {
+        patch[dk] = String(p[dk] || "");
+      }
+    }
 
     DB.updateRecord("tbl_document_deliveries", "delivery_id", id, patch);
     this._writeAudit({
@@ -427,9 +503,19 @@ var FieldOSDocumentDelivery = {
       template_version: patch.template_version,
       idempotency_key: patch.idempotency_key,
       failure_reason: patch.failure_reason || "",
+      failure_code: patch.failure_code || "",
+      provider_name: patch.provider_name != null ? patch.provider_name : row.provider_name || "",
+      provider_message_id: patch.provider_message_id
+        ? "present"
+        : row.provider_message_id
+          ? "present"
+          : "",
       actor_staff_id: actor.staff_id,
       actor_role: actor.role,
-      drive_filed: !!p.drive_file_id,
+      drive_filed: !!(p.drive_file_id || patch.drive_file_id),
+      drive_status: patch.drive_status || "",
+      email_status: patch.email_status || "",
+      completion_status: patch.completion_status || patch.status || "",
       version: patch.version
     });
     var merged = Object.assign({}, row, patch);

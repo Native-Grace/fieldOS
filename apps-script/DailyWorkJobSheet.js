@@ -3,6 +3,12 @@
  * create_completed_job_sheet_from_recordings — completed daily work (multi-recording).
  * Separate from create_job_sheet_from_recording (future/scheduled work).
  * Audio bytes never accepted — Drive file ids + metadata only.
+ *
+ * Response contract (Router wraps into status/record_id/data; also promotes IDs):
+ * {
+ *   action, message, job_sheet_id,
+ *   data: { job_sheet_id, record_id, job, links, idempotent }
+ * }
  */
 
 var FIELDOS_CREATE_COMPLETED_JOB_ALLOWLIST_ = {
@@ -59,9 +65,42 @@ function fieldosPickCreateCompletedJobPayload_(body) {
 }
 
 /**
+ * Router-compatible success payload. Must include job_sheet_id + data so doPost
+ * uses fieldosJsonResponse and does not drop the job object.
+ */
+function fieldosCompletedJobCreateRouterResult_(opts) {
+  const jobSheetId = String((opts && opts.job_sheet_id) || "").trim();
+  if (!jobSheetId) {
+    throw new Error("Create Error: job_sheet_id missing from completed-job result.");
+  }
+  const job = (opts && opts.job) || { job_sheet_id: jobSheetId };
+  if (!job.job_sheet_id) job.job_sheet_id = jobSheetId;
+  const idempotent = !!(opts && opts.idempotent);
+  const message =
+    (opts && opts.message) ||
+    (idempotent
+      ? "Existing completed job sheet returned"
+      : "Completed job sheet created");
+  return {
+    action: "create_completed_job_sheet_from_recordings",
+    message: message,
+    job_sheet_id: jobSheetId,
+    data: {
+      job_sheet_id: jobSheetId,
+      record_id: jobSheetId,
+      job: job,
+      links: (opts && opts.links) || [],
+      idempotent: idempotent,
+      headers: (opts && opts.headers) || [],
+      missing_job_fields: (opts && opts.missing_job_fields) || []
+    }
+  };
+}
+
+/**
  * Create one completed job sheet from a reviewed daily-work session.
  * @param {object} body
- * @returns {{job: object, links: object[], idempotent: boolean}}
+ * @returns {object} Router-compatible result with job_sheet_id + data.job
  */
 function fieldosCreateCompletedJobSheetFromRecordings_(body) {
   fieldosAssertStaffOrManager_(body);
@@ -90,16 +129,30 @@ function fieldosCreateCompletedJobSheetFromRecordings_(body) {
       ) {
         throw new Error("Conflict: idempotency key reused with a different reviewed payload.");
       }
-      const job = JobSheetRepository.findById(existing.job_sheet_id);
-      if (!job) {
-        throw new Error("Conflict: idempotent job_sheet_id missing.");
+      const existingId = String(existing.job_sheet_id || "").trim();
+      if (!existingId) {
+        throw new Error("Conflict: idempotent create-key row missing job_sheet_id.");
       }
-      return {
+      let job = JobSheetRepository.findById(existingId);
+      if (!job) {
+        job = { job_sheet_id: existingId };
+      }
+      let links = existing.links || [];
+      if (typeof existing.links_json === "string" && existing.links_json && !links.length) {
+        try {
+          links = JSON.parse(existing.links_json) || [];
+        } catch (e) {
+          links = [];
+        }
+      }
+      return fieldosCompletedJobCreateRouterResult_({
+        job_sheet_id: existingId,
         job: fieldosNormalizeJobForApi_(job),
-        links: existing.links || [],
+        links: links,
         idempotent: true,
+        message: "Existing completed job sheet returned",
         headers: DB.getHeaders("tbl_job_sheets")
-      };
+      });
     }
 
     // One active job per work session (when session metadata table exists).
@@ -128,9 +181,16 @@ function fieldosCreateCompletedJobSheetFromRecordings_(body) {
       writable.approval_status = "Pending Review";
     }
 
+    // Capture ID before insert so create-key + response never rely on undefined post-insert.
+    const jobSheetId = DB.generateId("JS");
+    if (!jobSheetId) throw new Error("Create Error: failed to generate job_sheet_id.");
+    writable.job_sheet_id = jobSheetId;
+
     const created = JobSheetRepository.create(writable);
-    const jobSheetId = String(created.job_sheet_id || "");
-    if (!jobSheetId) throw new Error("Create Error: job_sheet_id missing after insert.");
+    const createdId = String((created && created.job_sheet_id) || jobSheetId || "").trim();
+    if (!createdId || createdId !== jobSheetId) {
+      throw new Error("Create Error: job_sheet_id mismatch after insert.");
+    }
 
     const links = [];
     const createdBy = String(safe.created_by || writable.staff_id || "");
@@ -199,14 +259,73 @@ function fieldosCreateCompletedJobSheetFromRecordings_(body) {
       // Non-fatal.
     }
 
-    return {
+    return fieldosCompletedJobCreateRouterResult_({
+      job_sheet_id: jobSheetId,
       job: fieldosNormalizeJobForApi_(created),
       links: links,
       idempotent: false,
+      message: "Completed job sheet created",
       headers: DB.getHeaders("tbl_job_sheets"),
       missing_job_fields: picked.missing || []
-    };
+    });
   });
+}
+
+/**
+ * Look up a prior completed-job create by work_session_id and/or idempotency_key.
+ * Used by FastAPI reconciliation when create response lacked job_sheet_id.
+ */
+function fieldosGetCompletedJobSheetCreateResult_(body) {
+  fieldosAssertStaffOrManager_(body);
+  const workSessionId = String((body && body.work_session_id) || "").trim();
+  const idempotencyKey = String((body && body.idempotency_key) || "").trim();
+  if (!workSessionId && !idempotencyKey) {
+    throw new Error("Validation Error: work_session_id or idempotency_key is required.");
+  }
+
+  let row = null;
+  if (idempotencyKey) {
+    row = fieldosFindIdempotentCompletedJob_(idempotencyKey);
+  }
+  if (!row && workSessionId) {
+    row = fieldosFindIdempotentCompletedJobBySession_(workSessionId);
+  }
+
+  if (!row || !String(row.job_sheet_id || "").trim()) {
+    return {
+      action: "get_completed_job_sheet_create_result",
+      message: "No completed job create result found",
+      job_sheet_id: null,
+      data: {
+        found: false,
+        job_sheet_id: "",
+        payload_hash: "",
+        work_session_id: workSessionId,
+        job: null
+      }
+    };
+  }
+
+  const jobSheetId = String(row.job_sheet_id || "").trim();
+  let job = null;
+  try {
+    job = JobSheetRepository.findById(jobSheetId);
+  } catch (e) {
+    job = null;
+  }
+  return {
+    action: "get_completed_job_sheet_create_result",
+    message: "Completed job create result found",
+    job_sheet_id: jobSheetId,
+    data: {
+      found: true,
+      job_sheet_id: jobSheetId,
+      payload_hash: String(row.payload_hash || ""),
+      work_session_id: String(row.work_session_id || workSessionId || ""),
+      idempotency_key: String(row.idempotency_key || idempotencyKey || ""),
+      job: job ? fieldosNormalizeJobForApi_(job) : { job_sheet_id: jobSheetId }
+    }
+  };
 }
 
 function fieldosInsertDailyWorkRecordingLink_(fields) {
@@ -251,6 +370,19 @@ function fieldosFindIdempotentCompletedJob_(key) {
   }
   const rows = DB.findWhere("tbl_daily_work_create_keys", { idempotency_key: key }) || [];
   return rows.length ? rows[0] : null;
+}
+
+function fieldosFindIdempotentCompletedJobBySession_(workSessionId) {
+  try {
+    if (!DB.getHeaders("tbl_daily_work_create_keys")) return null;
+  } catch (e) {
+    return null;
+  }
+  const rows =
+    DB.findWhere("tbl_daily_work_create_keys", { work_session_id: workSessionId }) || [];
+  if (!rows.length) return null;
+  // Prefer the newest row when multiple exist.
+  return rows[rows.length - 1];
 }
 
 function fieldosStoreCompletedJobIdempotency_(row) {
