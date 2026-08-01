@@ -2,10 +2,11 @@ const TOKEN_KEY = "fieldos_token";
 const STAFF_KEY = "fieldos_staff";
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, detail = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -38,14 +39,23 @@ async function parseError(res) {
     const body = await res.json();
     const detail = body.detail || body.message || res.statusText;
     if (Array.isArray(detail)) {
-      return detail
-        .map((row) => (typeof row === "string" ? row : row?.msg || JSON.stringify(row)))
-        .filter(Boolean)
-        .join("; ");
+      return {
+        message: detail
+          .map((row) => (typeof row === "string" ? row : row?.msg || JSON.stringify(row)))
+          .filter(Boolean)
+          .join("; "),
+        detail,
+      };
     }
-    return typeof detail === "string" ? detail : JSON.stringify(detail);
+    if (detail && typeof detail === "object") {
+      return {
+        message: String(detail.message || JSON.stringify(detail)),
+        detail,
+      };
+    }
+    return { message: typeof detail === "string" ? detail : String(detail), detail: null };
   } catch {
-    return res.statusText || `Request failed (${res.status})`;
+    return { message: res.statusText || `Request failed (${res.status})`, detail: null };
   }
 }
 
@@ -63,7 +73,8 @@ export async function api(path, options = {}) {
     clearSession();
   }
   if (!res.ok) {
-    throw new ApiError(await parseError(res), res.status);
+    const parsed = await parseError(res);
+    throw new ApiError(parsed.message, res.status, parsed.detail);
   }
   if (res.status === 204) return null;
   return res.json();

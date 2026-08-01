@@ -285,14 +285,12 @@ var FieldOSJobCompletion = {
     };
   },
 
-  _normaliseMaterialRow: function (row, completionId, jobSheetId, now) {
-    let qty = row.quantity;
-    if (qty === "" || qty == null) qty = "";
-    else {
-      qty = Number(qty);
-      if (!Number.isFinite(qty)) {
-        throw new Error("Validation Error: material quantity must be numeric.");
-      }
+  _normaliseMaterialRow: function (row, completionId, jobSheetId, now, rowNumber) {
+    const unitIn = String(row.unit || "");
+    const normalised = fieldosNormaliseMaterialQuantity_(row.quantity, { unit: unitIn });
+    if (!normalised.ok) {
+      const n = rowNumber != null ? rowNumber : "?";
+      throw new Error("Validation Error: Material row " + n + " quantity must be numeric.");
     }
     return {
       material_entry_id: String(row.material_entry_id || DB.generateId("JMT")),
@@ -301,8 +299,8 @@ var FieldOSJobCompletion = {
       item_name: String(row.item_name || ""),
       catalog_material_id: String(row.catalog_material_id || row.material_id || ""),
       item_code: String(row.item_code || ""),
-      quantity: qty,
-      unit: String(row.unit || ""),
+      quantity: normalised.quantity == null ? "" : normalised.quantity,
+      unit: String(normalised.unit != null ? normalised.unit : unitIn),
       billable: this._boolSheet(row.billable),
       confirmation_status: String(row.confirmation_status || FIELDOS_ROW_CONFIRMATION_.SUGGESTED),
       notes: String(row.notes || ""),
@@ -498,8 +496,14 @@ var FieldOSJobCompletion = {
       }.bind(this)
     );
     (materials || []).forEach(
-      function (row) {
-        const normalised = this._normaliseMaterialRow(row, completionId, jobSheetId, now);
+      function (row, idx) {
+        const normalised = this._normaliseMaterialRow(
+          row,
+          completionId,
+          jobSheetId,
+          now,
+          idx + 1
+        );
         DB.insertRecord("tbl_job_materials", normalised, { alreadyLocked: true });
         materialRows.push(normalised);
       }.bind(this)
@@ -666,6 +670,32 @@ var FieldOSJobCompletion = {
         );
       }
       let header = self._findActiveCompletionRow(jobSheetId);
+      // Existing draft: do not create/regenerate — return compact existing result for edit/save.
+      if (header) {
+        if (String(header.completion_status) === FIELDOS_COMPLETION_STATUSES_.FINALISED) {
+          throw new Error(
+            "Validation Error: Finalised completions require explicit reopen before regenerate."
+          );
+        }
+        const existingChildren = self._loadChildren(header.completion_id);
+        const existingId = String(header.completion_id || "");
+        return {
+          action: "generate_job_completion_draft",
+          message: "Completion draft already exists",
+          job_sheet_id: jobSheetId,
+          data: {
+            completion_id: existingId,
+            job_sheet_id: jobSheetId,
+            status: String(header.completion_status || FIELDOS_COMPLETION_STATUSES_.DRAFT),
+            labour_count: (existingChildren.labour_entries || []).length,
+            machinery_count: (existingChildren.machinery_entries || []).length,
+            material_count: (existingChildren.material_entries || []).length,
+            generated: false,
+            existing: true
+          }
+        };
+      }
+
       const now = self._nowIso();
       const draft = fieldosBuildCompletionDraftFromJob_(job, {
         staff_name: String(payload.staff_name || "")
@@ -751,10 +781,13 @@ var FieldOSJobCompletion = {
               }
               if (Array.isArray(parsed.material_entries)) {
                 draft.material_entries = parsed.material_entries.map(function (row) {
+                  const qtyNorm = fieldosNormaliseMaterialQuantity_(row.quantity, {
+                    unit: String(row.unit || "")
+                  });
                   return {
                     item_name: String(row.item_name || ""),
-                    quantity: row.quantity == null ? null : Number(row.quantity),
-                    unit: String(row.unit || ""),
+                    quantity: qtyNorm.ok ? qtyNorm.quantity : row.quantity,
+                    unit: qtyNorm.ok ? String(qtyNorm.unit || "") : String(row.unit || ""),
                     billable: false,
                     confirmation_status: FIELDOS_ROW_CONFIRMATION_.SUGGESTED,
                     notes: String(row.notes || ""),
@@ -771,67 +804,34 @@ var FieldOSJobCompletion = {
         }
       }
 
-      if (!header) {
-        const completionId = DB.generateId("CMP");
-        header = {
-          completion_id: completionId,
-          job_sheet_id: jobSheetId,
-          completion_status: FIELDOS_COMPLETION_STATUSES_.DRAFT,
-          work_summary: draft.work_summary,
-          invoice_description: draft.invoice_description,
-          internal_notes: "",
-          total_labour_hours: 0,
-          total_travel_hours: 0,
-          total_machinery_hours: 0,
-          billable_labour_hours: 0,
-          non_billable_labour_hours: 0,
-          variations: self._serializeList(draft.variations),
-          warnings: self._serializeList(draft.warnings),
-          warning_resolutions: "",
-          created_by: actor,
-          created_at: now,
-          updated_by: actor,
-          updated_at: now,
-          finalised_by: "",
-          finalised_at: "",
-          reopened_by: "",
-          reopened_at: "",
-          reopen_reason: "",
-          version: 1
-        };
-        DB.insertRecord("tbl_job_completions", header, { alreadyLocked: true });
-      } else {
-        if (String(header.completion_status) === FIELDOS_COMPLETION_STATUSES_.FINALISED) {
-          throw new Error("Validation Error: Finalised completions require explicit reopen before regenerate.");
-        }
-        self._checkVersion(header, payload.expected_version);
-        header.work_summary = draft.work_summary;
-        header.invoice_description = draft.invoice_description;
-        header.variations = self._serializeList(draft.variations);
-        header.warnings = self._serializeList(draft.warnings);
-        header.warning_resolutions = "";
-        header.updated_by = actor;
-        header.updated_at = now;
-        header.version = Number(header.version || 1) + 1;
-        header.completion_status =
-          header.completion_status === FIELDOS_COMPLETION_STATUSES_.REOPENED
-            ? FIELDOS_COMPLETION_STATUSES_.DRAFT
-            : header.completion_status || FIELDOS_COMPLETION_STATUSES_.DRAFT;
-        DB.updateRecord("tbl_job_completions", "completion_id", header.completion_id, {
-          work_summary: header.work_summary,
-          invoice_description: header.invoice_description,
-          variations: header.variations,
-          warnings: header.warnings,
-          warning_resolutions: header.warning_resolutions,
-          updated_by: header.updated_by,
-          updated_at: header.updated_at,
-          version: header.version,
-          completion_status: header.completion_status
-        });
-        DB.deleteWhere("tbl_job_labour", { completion_id: header.completion_id });
-        DB.deleteWhere("tbl_job_machinery", { completion_id: header.completion_id });
-        DB.deleteWhere("tbl_job_materials", { completion_id: header.completion_id });
-      }
+      const completionId = DB.generateId("CMP");
+      header = {
+        completion_id: completionId,
+        job_sheet_id: jobSheetId,
+        completion_status: FIELDOS_COMPLETION_STATUSES_.DRAFT,
+        work_summary: draft.work_summary,
+        invoice_description: draft.invoice_description,
+        internal_notes: "",
+        total_labour_hours: 0,
+        total_travel_hours: 0,
+        total_machinery_hours: 0,
+        billable_labour_hours: 0,
+        non_billable_labour_hours: 0,
+        variations: self._serializeList(draft.variations),
+        warnings: self._serializeList(draft.warnings),
+        warning_resolutions: "",
+        created_by: actor,
+        created_at: now,
+        updated_by: actor,
+        updated_at: now,
+        finalised_by: "",
+        finalised_at: "",
+        reopened_by: "",
+        reopened_at: "",
+        reopen_reason: "",
+        version: 1
+      };
+      DB.insertRecord("tbl_job_completions", header, { alreadyLocked: true });
 
       const children = self._replaceChildren(
         header.completion_id,
@@ -883,7 +883,6 @@ var FieldOSJobCompletion = {
       const labourCount = children.labour_entries.length;
       const machineryCount = children.machinery_entries.length;
       const materialCount = children.material_entries.length;
-      const completionId = String(header.completion_id || "");
       const result = {
         action: "generate_job_completion_draft",
         message: "Completion draft generated",
@@ -1025,12 +1024,50 @@ var FieldOSJobCompletion = {
         version: patch.version
       });
 
-      return {
+      try {
+        if (typeof SpreadsheetApp !== "undefined" && SpreadsheetApp.flush) {
+          SpreadsheetApp.flush();
+        }
+      } catch (flushErr) {
+        // Non-fatal — best-effort before building the HTTP response.
+      }
+
+      const labourCount = children.labour_entries.length;
+      const machineryCount = children.machinery_entries.length;
+      const materialCount = children.material_entries.length;
+      const completionIdOut = String(header.completion_id || "");
+      const result = {
         action: "update_job_completion",
-        message: "Completion updated.",
+        message: "Completion updated",
         job_sheet_id: jobSheetId,
-        data: self._assemble(header, children, job, actorRole, staffId)
+        data: {
+          completion_id: completionIdOut,
+          job_sheet_id: jobSheetId,
+          status: String(header.completion_status || nextStatus),
+          version: Number(patch.version) || Number(header.version) || 1,
+          labour_count: labourCount,
+          machinery_count: machineryCount,
+          material_count: materialCount,
+          updated: true
+        }
       };
+      try {
+        const bytes = JSON.stringify(result).length;
+        if (typeof Logger !== "undefined" && Logger.log) {
+          Logger.log(
+            JSON.stringify({
+              action: "update_job_completion",
+              job_sheet_id: jobSheetId,
+              completion_id: completionIdOut,
+              response_bytes: bytes,
+              version: result.data.version
+            })
+          );
+        }
+      } catch (logErr) {
+        // Never fail update on logging.
+      }
+      return result;
     });
   },
 

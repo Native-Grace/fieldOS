@@ -155,6 +155,74 @@ export function emptyMaterialRow() {
   };
 }
 
+/**
+ * Normalise material quantity for client validation / display.
+ * Mirrors Apps Script fieldosNormaliseMaterialQuantity_.
+ */
+export function normaliseMaterialQuantity(raw, options = {}) {
+  const existingUnit = String(options.unit || "");
+  if (raw === null || raw === undefined) {
+    return { ok: true, quantity: null, unit: existingUnit, blank: true };
+  }
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) {
+      return { ok: false, quantity: null, unit: existingUnit, error: "non_numeric", raw: String(raw) };
+    }
+    return { ok: true, quantity: raw, unit: existingUnit, blank: false };
+  }
+  const s = String(raw).trim();
+  if (!s) {
+    return { ok: true, quantity: null, unit: existingUnit, blank: true };
+  }
+  if (/^[+-]?\d+(\.\d+)?$/.test(s)) {
+    return { ok: true, quantity: Number(s), unit: existingUnit, blank: false };
+  }
+  const withUnit = /^([+-]?\d+(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9/%._-]*)\s*$/.exec(s);
+  if (withUnit) {
+    const qty = Number(withUnit[1]);
+    if (!Number.isFinite(qty)) {
+      return { ok: false, quantity: null, unit: existingUnit, error: "non_numeric", raw: s };
+    }
+    return {
+      ok: true,
+      quantity: qty,
+      unit: existingUnit || String(withUnit[2]),
+      blank: false,
+    };
+  }
+  return { ok: false, quantity: null, unit: existingUnit, error: "non_numeric", raw: s };
+}
+
+/** Parse "Material row N quantity must be numeric." → 0-based index or null. */
+export function parseMaterialQuantityRowError(message) {
+  const m = /Material row\s+(\d+)\s+quantity must be numeric/i.exec(String(message || ""));
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return n - 1;
+}
+
+export function materialFieldErrors(row) {
+  const errors = {};
+  if (!row || row.confirmation_status === ROW_CONFIRMATION.EXCLUDED) return errors;
+  const normalised = normaliseMaterialQuantity(row.quantity, { unit: row.unit || "" });
+  if (!normalised.ok) {
+    errors.quantity = "Quantity must be numeric.";
+  }
+  return errors;
+}
+
+export function collectMaterialValidationMessages(form) {
+  const messages = [];
+  (form?.material_entries || []).forEach((row, index) => {
+    const errors = materialFieldErrors(row);
+    if (errors.quantity) {
+      messages.push(`Material row ${index + 1} quantity must be numeric.`);
+    }
+  });
+  return messages;
+}
+
 export function buildCompletionForm(data) {
   const c = data?.completion || {};
   return {

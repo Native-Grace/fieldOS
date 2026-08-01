@@ -8,6 +8,7 @@ import {
   buildCompletionForm,
   canFinaliseClient,
   collectLabourValidationMessages,
+  collectMaterialValidationMessages,
   completionHasUnsavedChanges,
   describeClockTime,
   displayLabourHours,
@@ -15,8 +16,11 @@ import {
   isBreakWarningResolved,
   isMobileFriendlyTableLayout,
   labourFieldErrors,
+  materialFieldErrors,
   needsOverrideReason,
   normaliseClockTime,
+  normaliseMaterialQuantity,
+  parseMaterialQuantityRowError,
   ROW_CONFIRMATION,
   upsertBreakWarningResolution,
 } from "./jobCompletionHelpers.mjs";
@@ -190,4 +194,43 @@ test("clock normaliser and form coerce ISO/Date/fraction to HH:MM for time input
   });
   assert.equal(form.labour_entries[0].start_time, "07:00");
   assert.equal(form.labour_entries[0].finish_time, "15:00");
+});
+
+test("material quantity validation highlights row and retains edits", () => {
+  assert.equal(normaliseMaterialQuantity("2.5").quantity, 2.5);
+  assert.equal(normaliseMaterialQuantity("2 bags").unit, "bags");
+  assert.equal(normaliseMaterialQuantity("several").ok, false);
+
+  const form = buildCompletionForm({
+    completion: { work_summary: "Keep me", invoice_description: "Invoice" },
+    material_entries: [
+      { item_name: "Mulch", quantity: 1, unit: "m3" },
+      { item_name: "Bags", quantity: "several", unit: "" },
+    ],
+  });
+  const messages = collectMaterialValidationMessages(form);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /Material row 2/);
+  assert.equal(parseMaterialQuantityRowError(messages[0]), 1);
+  assert.equal(materialFieldErrors(form.material_entries[1]).quantity, "Quantity must be numeric.");
+  // Unsaved edits remain on the form object (no regenerate).
+  assert.equal(form.work_summary, "Keep me");
+  assert.equal(form.material_entries[1].quantity, "several");
+});
+
+test("409 conflict messaging requires reload and preserves local copy", () => {
+  const local = buildCompletionForm({
+    completion: { work_summary: "Local unsaved", invoice_description: "x", version: 2 },
+    material_entries: [{ item_name: "Soil", quantity: "3", unit: "bags" }],
+  });
+  const server = buildCompletionForm({
+    completion: { work_summary: "Server latest", invoice_description: "x", version: 3 },
+    material_entries: [{ item_name: "Soil", quantity: 1, unit: "bags" }],
+  });
+  assert.equal(completionHasUnsavedChanges(local, server), true);
+  const conflictMsg = "This completion changed. Reload the latest version before saving.";
+  assert.match(conflictMsg, /Reload the latest version/);
+  // Local copy kept for comparison — not overwritten by server form.
+  assert.equal(local.work_summary, "Local unsaved");
+  assert.equal(local.material_entries[0].quantity, "3");
 });

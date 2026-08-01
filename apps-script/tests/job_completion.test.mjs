@@ -367,7 +367,15 @@ test("stale version rejected and finalise/reopen flow", () => {
     material_entries: materials,
     warnings: [],
   }).data;
+  assert.equal(data.updated, true);
+  assert.ok(data.version > 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(data, "completion"), false);
 
+  data = ctx.FieldOSJobCompletion.getJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  }).data;
   assert.equal(data.completion.total_labour_hours, 7.5);
 
   data = ctx.FieldOSJobCompletion.finaliseJobCompletion({
@@ -648,6 +656,13 @@ test("read -> api -> save -> read round trip keeps canonical HH:MM", () => {
     warnings: [],
     warning_resolutions: [],
   }).data;
+  assert.equal(data.updated, true);
+
+  data = ctx.FieldOSJobCompletion.getJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  }).data;
 
   assert.equal(data.labour_entries[0].start_time, "07:00");
   assert.equal(data.labour_entries[0].finish_time, "15:00");
@@ -695,4 +710,145 @@ test("finalisation succeeds with canonical times after Sheets Date coercion", ()
   assert.equal(data.completion.completion_status, "Finalised");
   assert.equal(data.labour_entries[0].start_time, "07:00");
   assert.equal(data.completion.total_labour_hours, 7.5);
+});
+
+test("material quantity normalisation accepts numbers strings decimals whitespace and unit split", () => {
+  const ctx = loadHelpers();
+  assert.equal(ctx.fieldosNormaliseMaterialQuantity_(2).quantity, 2);
+  assert.equal(ctx.fieldosNormaliseMaterialQuantity_("2").quantity, 2);
+  assert.equal(ctx.fieldosNormaliseMaterialQuantity_("2.5").quantity, 2.5);
+  assert.equal(ctx.fieldosNormaliseMaterialQuantity_("0").quantity, 0);
+  assert.equal(ctx.fieldosNormaliseMaterialQuantity_("  ").blank, true);
+  assert.equal(ctx.fieldosNormaliseMaterialQuantity_(null).blank, true);
+  const split = ctx.fieldosNormaliseMaterialQuantity_("2 bags");
+  assert.equal(split.ok, true);
+  assert.equal(split.quantity, 2);
+  assert.equal(split.unit, "bags");
+  assert.equal(ctx.fieldosNormaliseMaterialQuantity_("several").ok, false);
+  assert.equal(ctx.fieldosNormaliseMaterialQuantity_("N/A").ok, false);
+});
+
+test("material text quantity rejected with row number; numeric strings accepted on update", () => {
+  const h = harness();
+  h.flushCalls = 0;
+  const ctx = loadCompletion(h);
+  ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  });
+  const loaded = ctx.FieldOSJobCompletion.getJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  }).data;
+
+  assert.throws(
+    () =>
+      ctx.FieldOSJobCompletion.updateJobCompletion({
+        job_sheet_id: "21759f5d",
+        actor_role: "manager",
+        staff_id: "STAFF-MGR001",
+        expected_version: loaded.completion.version,
+        material_entries: [
+          { item_name: "Mulch", quantity: 1, unit: "m3" },
+          { item_name: "Bags", quantity: "several", unit: "" },
+        ],
+      }),
+    /Material row 2 quantity must be numeric/
+  );
+
+  const beforeVersion = Number(h.tables.tbl_job_completions[0].version);
+  h.flushCalls = 0;
+  const out = ctx.FieldOSJobCompletion.updateJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+    expected_version: loaded.completion.version,
+    work_summary: loaded.completion.work_summary,
+    invoice_description: loaded.completion.invoice_description,
+    material_entries: [
+      { item_name: "Mulch", quantity: "2.5", unit: "m3" },
+      { item_name: "Soil", quantity: "2 bags", unit: "" },
+      { item_name: "Optional", quantity: "  ", unit: "" },
+    ],
+  });
+  const blob = JSON.stringify(out);
+  assert.ok(Buffer.byteLength(blob, "utf8") < 1024);
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "completion"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "labour_entries"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "machinery_entries"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out.data, "material_entries"), false);
+  assert.equal(out.data.updated, true);
+  assert.equal(out.data.material_count, 3);
+  assert.equal(out.data.version, beforeVersion + 1);
+  assert.equal(h.flushCalls, 1);
+  assert.equal(Number(h.tables.tbl_job_completions[0].version), beforeVersion + 1);
+
+  const mats = h.tables.tbl_job_materials;
+  assert.equal(mats[0].quantity, 2.5);
+  assert.equal(mats[1].quantity, 2);
+  assert.equal(mats[1].unit, "bags");
+  assert.equal(mats[2].quantity, "");
+});
+
+test("generate with existing completion returns existing without rewriting", () => {
+  const h = harness();
+  const ctx = loadCompletion(h);
+  const first = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  });
+  assert.equal(first.data.generated, true);
+  const version = Number(h.tables.tbl_job_completions[0].version);
+  const labourCount = h.tables.tbl_job_labour.length;
+  const second = ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  });
+  assert.equal(second.data.existing, true);
+  assert.equal(second.data.generated, false);
+  assert.equal(second.data.completion_id, first.data.completion_id);
+  assert.equal(Number(h.tables.tbl_job_completions[0].version), version);
+  assert.equal(h.tables.tbl_job_labour.length, labourCount);
+});
+
+test("update response size under 1KB vs full assemble", () => {
+  const h = harness();
+  const ctx = loadCompletion(h);
+  ctx.FieldOSJobCompletion.generateJobCompletionDraft({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  });
+  const loaded = ctx.FieldOSJobCompletion.getJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+  });
+  const beforeAssembleBytes = Buffer.byteLength(
+    JSON.stringify({
+      action: "update_job_completion",
+      message: "Completion updated.",
+      job_sheet_id: "21759f5d",
+      data: loaded.data,
+    }),
+    "utf8"
+  );
+  const updated = ctx.FieldOSJobCompletion.updateJobCompletion({
+    job_sheet_id: "21759f5d",
+    actor_role: "manager",
+    staff_id: "STAFF-MGR001",
+    expected_version: loaded.data.completion.version,
+    work_summary: "Updated summary for size check",
+  });
+  const afterBytes = Buffer.byteLength(JSON.stringify(updated), "utf8");
+  assert.ok(beforeAssembleBytes > 1024, `expected full assemble >1KB got ${beforeAssembleBytes}`);
+  assert.ok(afterBytes < 1024, `expected minimal update <1KB got ${afterBytes}`);
+  // Expose sizes for the report.
+  updated.__size_before = beforeAssembleBytes;
+  updated.__size_after = afterBytes;
+  assert.ok(afterBytes < beforeAssembleBytes);
 });

@@ -8,6 +8,7 @@ import {
   buildCompletionForm,
   canFinaliseClient,
   collectLabourValidationMessages,
+  collectMaterialValidationMessages,
   completionHasUnsavedChanges,
   displayLabourHours,
   emptyLabourRow,
@@ -18,7 +19,10 @@ import {
   isResolvableBreakWarning,
   findWarningResolution,
   labourFieldErrors,
+  materialFieldErrors,
   needsOverrideReason,
+  parseMaterialQuantityRowError,
+  normaliseMaterialQuantity,
   upsertBreakWarningResolution,
   warningKey,
 } from "../jobCompletionHelpers.mjs";
@@ -42,6 +46,9 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
   const [overrideReason, setOverrideReason] = useState("");
   const [resolveDrafts, setResolveDrafts] = useState({});
   const [showFieldErrors, setShowFieldErrors] = useState(false);
+  const [materialErrorRow, setMaterialErrorRow] = useState(null);
+  const [conflictLocalEdits, setConflictLocalEdits] = useState(null);
+  const [needsReload, setNeedsReload] = useState(false);
   // Lazy: completion is a separate, heavier round-trip. Do NOT fetch on job open —
   // it must never block or slow down core job detail rendering.
   const [opened, setOpened] = useState(false);
@@ -81,6 +88,9 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
     setOverrideReason("");
     setResolveDrafts({});
     setShowFieldErrors(false);
+    setMaterialErrorRow(null);
+    setConflictLocalEdits(null);
+    setNeedsReload(false);
   }, [jobSheetId]);
 
   function openPanel() {
@@ -123,7 +133,7 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
     });
   }
 
-  async function runAction(path, method, body) {
+  async function runAction(path, method, body, options = {}) {
     if (busy) return;
     setBusy(true);
     setError("");
@@ -134,20 +144,47 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
       const next = buildCompletionForm(data);
       setForm(next);
       setBaseline(next);
+      setMaterialErrorRow(null);
+      setNeedsReload(false);
+      setConflictLocalEdits(null);
       setMessage(data.completion?.completion_status || "Saved");
       if (onUpdated) onUpdated(data);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setError("This completion changed elsewhere. Refresh and try again.");
+        // Preserve unsaved edits for comparison — never overwrite blindly.
+        setConflictLocalEdits(form);
+        setNeedsReload(true);
+        setError("This completion changed. Reload the latest version before saving.");
+      } else if (err instanceof ApiError && err.status === 422) {
+        const rowIdx = parseMaterialQuantityRowError(err.message);
+        if (rowIdx != null) {
+          setMaterialErrorRow(rowIdx);
+          setShowFieldErrors(true);
+        }
+        // Keep all unsaved edits; do not regenerate.
+        setError(String(err.message || err));
       } else {
         setError(String(err.message || err));
       }
+      if (options.rethrow) throw err;
     } finally {
       setBusy(false);
     }
   }
 
+  async function reloadLatestKeepingLocalCopy() {
+    setConflictLocalEdits(form);
+    try {
+      await load();
+      setNeedsReload(false);
+      setMessage("Latest version loaded. Review your local edits before saving.");
+    } catch (err) {
+      setError(String(err.message || err));
+    }
+  }
+
   async function generateDraft() {
+    // Never auto-regenerate when editing — explicit button only; existing draft returns as-is.
     await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion/generate`, "POST", {
       expected_version: completion?.version,
       staff_name: staff?.staff_name || "",
@@ -159,8 +196,28 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
   }
 
   async function saveDraft(extra = {}) {
+    const materialMessages = collectMaterialValidationMessages(form);
+    if (materialMessages.length) {
+      setShowFieldErrors(true);
+      const first = parseMaterialQuantityRowError(materialMessages[0]);
+      setMaterialErrorRow(first);
+      setError(materialMessages.join(" "));
+      return;
+    }
+    if (needsReload) {
+      setError("This completion changed. Reload the latest version before saving.");
+      return;
+    }
     await runAction(`/jobs/${encodeURIComponent(jobSheetId)}/completion`, "PATCH", {
       ...form,
+      material_entries: (form.material_entries || []).map((row) => {
+        const n = normaliseMaterialQuantity(row.quantity, { unit: row.unit || "" });
+        return {
+          ...row,
+          quantity: n.ok ? n.quantity : row.quantity,
+          unit: n.ok ? n.unit : row.unit,
+        };
+      }),
       expected_version: completion?.version,
       ...extra,
     });
@@ -275,6 +332,25 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
       )}
 
       {error ? <div className="error" role="alert">{error}</div> : null}
+      {needsReload ? (
+        <div className="warn" role="status">
+          <p className="small">
+            A newer server version is available. Your unsaved edits are kept locally for comparison —
+            reload before saving.
+          </p>
+          <button
+            className="btn btn-ghost"
+            type="button"
+            disabled={busy || loading}
+            onClick={reloadLatestKeepingLocalCopy}
+          >
+            Reload latest version
+          </button>
+          {conflictLocalEdits ? (
+            <p className="small muted">Local edits preserved ({Object.keys(conflictLocalEdits).length} form keys).</p>
+          ) : null}
+        </div>
+      ) : null}
       {message ? <div className="ok small">{message}</div> : null}
       {dirty ? <div className="warn small">You have unsaved changes.</div> : null}
 
@@ -626,8 +702,16 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
 
           <h3>Materials</h3>
           <div className="completion-table" role="table" aria-label="Material entries">
-            {form.material_entries.map((row, index) => (
-              <div className="completion-row" role="row" key={row.material_entry_id || `mat-${index}`}>
+            {form.material_entries.map((row, index) => {
+              const fieldErrors =
+                showFieldErrors || materialErrorRow === index ? materialFieldErrors(row) : {};
+              const rowHighlighted = materialErrorRow === index || !!fieldErrors.quantity;
+              return (
+              <div
+                className={`completion-row${rowHighlighted ? " has-error" : ""}`}
+                role="row"
+                key={row.material_entry_id || `mat-${index}`}
+              >
                 <div className="field">
                   <label htmlFor={`mat-name-${index}`}>Item</label>
                   <input
@@ -637,21 +721,20 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
                     onChange={(e) => setMaterial(index, { item_name: e.target.value })}
                   />
                 </div>
-                <div className="field">
+                <div className={`field${fieldErrors.quantity ? " has-error" : ""}`}>
                   <label htmlFor={`mat-qty-${index}`}>Qty</label>
                   <input
                     id={`mat-qty-${index}`}
-                    type="number"
-                    min="0"
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={row.quantity ?? ""}
                     disabled={readOnly || busy}
-                    onChange={(e) =>
-                      setMaterial(index, {
-                        quantity: e.target.value === "" ? "" : Number(e.target.value),
-                      })
-                    }
+                    aria-invalid={!!fieldErrors.quantity}
+                    onChange={(e) => setMaterial(index, { quantity: e.target.value })}
                   />
+                  {fieldErrors.quantity ? (
+                    <span className="field-error" role="alert">{fieldErrors.quantity}</span>
+                  ) : null}
                 </div>
                 <div className="field">
                   <label htmlFor={`mat-unit-${index}`}>Unit</label>
@@ -686,7 +769,8 @@ export default function JobCompletionPanel({ jobSheetId, onUpdated }) {
                   </div>
                 ) : null}
               </div>
-            ))}
+              );
+            })}
           </div>
           {!readOnly ? (
             <button

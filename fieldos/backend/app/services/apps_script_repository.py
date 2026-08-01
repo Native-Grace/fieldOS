@@ -330,6 +330,140 @@ class AppsScriptJobRepository:
             return loaded
         return None
 
+    @staticmethod
+    def _is_apps_transport_error(error: AppsScriptError) -> bool:
+        code = str(getattr(error, "code", "") or "")
+        message = str(error).lower()
+        return code.startswith("apps_script_") or any(
+            token in message
+            for token in (
+                "redirect",
+                "html instead of json",
+                "invalid apps script",
+                "timed out",
+                "unreachable",
+                "expired",
+            )
+        )
+
+    @staticmethod
+    def _is_completion_conflict(error: AppsScriptError) -> bool:
+        message = str(error).lower()
+        code = int(getattr(error, "http_status", 0) or 0)
+        return code == 409 or "conflict" in message or "changed since you loaded" in message
+
+    @staticmethod
+    def _update_fields_appear_applied(body: dict[str, Any], loaded: dict[str, Any]) -> bool:
+        completion = loaded.get("completion") if isinstance(loaded.get("completion"), dict) else {}
+        if not completion:
+            return False
+        expected = body.get("expected_version")
+        if expected is not None and expected != "":
+            try:
+                if int(completion.get("version") or 0) != int(expected) + 1:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        checks: list[tuple[str, Any]] = [
+            ("work_summary", body.get("work_summary")),
+            ("invoice_description", body.get("invoice_description")),
+            ("internal_notes", body.get("internal_notes")),
+            ("completion_status", body.get("completion_status")),
+        ]
+        for key, value in checks:
+            if value is None:
+                continue
+            if str(completion.get(key) or "") != str(value):
+                return False
+        if body.get("material_entries") is not None:
+            if len(loaded.get("material_entries") or []) != len(body.get("material_entries") or []):
+                return False
+        if body.get("labour_entries") is not None:
+            if len(loaded.get("labour_entries") or []) != len(body.get("labour_entries") or []):
+                return False
+        if body.get("machinery_entries") is not None:
+            if len(loaded.get("machinery_entries") or []) != len(body.get("machinery_entries") or []):
+                return False
+        return True
+
+    async def _load_completion_after_update(
+        self, body: dict[str, Any], *, update_result: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        job_sheet_id = str(body.get("job_sheet_id") or "").strip()
+        staff_id = str(body.get("staff_id") or body.get("actor_staff_id") or "").strip()
+        actor_role = str(body.get("actor_role") or "staff").strip()
+        if not job_sheet_id:
+            raise HTTPException(status_code=422, detail="job_sheet_id is required.")
+        loaded = await self.aget_job_completion(job_sheet_id, staff_id, actor_role)
+        if isinstance(loaded.get("completion"), dict) and loaded["completion"].get("completion_id"):
+            return loaded
+        if update_result:
+            data = (
+                update_result.get("data") if isinstance(update_result.get("data"), dict) else {}
+            )
+            if isinstance(data.get("completion"), dict) and data["completion"].get("completion_id"):
+                return self._completion_payload(data)
+        raise HTTPException(
+            status_code=502,
+            detail="Update succeeded but completion could not be loaded.",
+        )
+
+    async def _reconcile_update_completion(
+        self, body: dict[str, Any], *, error: AppsScriptError
+    ) -> dict[str, Any] | None:
+        """If update POST may have persisted, load via get — never re-POST update."""
+        if not self._is_apps_transport_error(error):
+            return None
+        job_sheet_id = str(body.get("job_sheet_id") or "").strip()
+        staff_id = str(body.get("staff_id") or body.get("actor_staff_id") or "").strip()
+        actor_role = str(body.get("actor_role") or "staff").strip()
+        if not job_sheet_id:
+            return None
+        try:
+            loaded = await self.aget_job_completion(job_sheet_id, staff_id, actor_role)
+        except Exception:
+            return None
+        if not self._update_fields_appear_applied(body, loaded):
+            return None
+        completion = loaded.get("completion") if isinstance(loaded.get("completion"), dict) else {}
+        log_extra(
+            logger,
+            20,
+            "Job completion update reconciled via get",
+            job_sheet_id=job_sheet_id,
+            completion_id=str(completion.get("completion_id") or ""),
+            version=completion.get("version"),
+            apps_error_code=str(getattr(error, "code", "") or "") or None,
+        )
+        return loaded
+
+    async def _raise_update_conflict(self, body: dict[str, Any], error: AppsScriptError) -> None:
+        """409: return current version via safe get — never auto-retry with a new version."""
+        job_sheet_id = str(body.get("job_sheet_id") or "").strip()
+        staff_id = str(body.get("staff_id") or body.get("actor_staff_id") or "").strip()
+        actor_role = str(body.get("actor_role") or "staff").strip()
+        detail: dict[str, Any] = {
+            "message": "Conflict: completion version changed since you loaded this record.",
+            "job_sheet_id": job_sheet_id,
+        }
+        if job_sheet_id:
+            try:
+                loaded = await self.aget_job_completion(job_sheet_id, staff_id, actor_role)
+                completion = (
+                    loaded.get("completion") if isinstance(loaded.get("completion"), dict) else {}
+                )
+                if completion:
+                    detail.update(
+                        {
+                            "completion_id": str(completion.get("completion_id") or ""),
+                            "version": int(completion.get("version") or 0),
+                            "completion_status": str(completion.get("completion_status") or ""),
+                        }
+                    )
+            except Exception:
+                pass
+        raise HTTPException(status_code=409, detail=detail) from error
+
     async def aget_job_completion(
         self, job_sheet_id: str, staff_id: str, actor_role: str
     ) -> dict[str, Any]:
@@ -525,6 +659,8 @@ class AppsScriptJobRepository:
                 )
             elif action == "update_job_completion":
                 result = await self.apps_script.update_job_completion(body)
+                # Minimal update envelope — always reload via get (never re-POST update).
+                return await self._load_completion_after_update(body, update_result=result)
             elif action == "finalise_job_completion":
                 result = await self.apps_script.finalise_job_completion(body)
             elif action == "reopen_job_completion":
@@ -536,6 +672,20 @@ class AppsScriptJobRepository:
                 reconciled = await self._reconcile_generate_completion(body, error=exc)
                 if reconciled is not None:
                     return reconciled
+            if action == "update_job_completion":
+                if self._is_completion_conflict(exc):
+                    await self._raise_update_conflict(body, exc)
+                reconciled = await self._reconcile_update_completion(body, error=exc)
+                if reconciled is not None:
+                    return reconciled
+                if self._is_apps_transport_error(exc):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "Completion update could not be confirmed. "
+                            "Reload the latest version before saving again."
+                        ),
+                    ) from exc
             _raise_from_apps(exc)
             raise
         data = result.get("data") if isinstance(result.get("data"), dict) else {}

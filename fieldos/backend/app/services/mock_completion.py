@@ -106,15 +106,24 @@ def _normalise_machinery(row: dict[str, Any], completion_id: str, job_sheet_id: 
     }
 
 
-def _normalise_material(row: dict[str, Any], completion_id: str, job_sheet_id: str, now: str) -> dict[str, Any]:
-    qty = row.get("quantity")
-    if qty not in (None, ""):
-        try:
-            qty = float(qty)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail="Validation Error: material quantity must be numeric.") from exc
-    else:
-        qty = None
+def _normalise_material(
+    row: dict[str, Any],
+    completion_id: str,
+    job_sheet_id: str,
+    now: str,
+    *,
+    row_number: int | None = None,
+) -> dict[str, Any]:
+    from app.services.completion_math import normalise_material_quantity
+
+    unit_in = str(row.get("unit") or "")
+    normalised = normalise_material_quantity(row.get("quantity"), unit=unit_in)
+    if not normalised.get("ok"):
+        n = row_number if row_number is not None else "?"
+        raise HTTPException(
+            status_code=422,
+            detail=f"Validation Error: Material row {n} quantity must be numeric.",
+        )
     return {
         "material_entry_id": str(row.get("material_entry_id") or f"JMT-{uuid.uuid4().hex[:8].upper()}"),
         "completion_id": completion_id,
@@ -122,8 +131,8 @@ def _normalise_material(row: dict[str, Any], completion_id: str, job_sheet_id: s
         "item_name": str(row.get("item_name") or ""),
         "catalog_material_id": str(row.get("catalog_material_id") or ""),
         "item_code": str(row.get("item_code") or ""),
-        "quantity": qty,
-        "unit": str(row.get("unit") or ""),
+        "quantity": normalised.get("quantity"),
+        "unit": str(normalised.get("unit") or unit_in),
         "billable": _bool(row.get("billable")),
         "confirmation_status": str(row.get("confirmation_status") or "Suggested"),
         "notes": str(row.get("notes") or ""),
@@ -326,25 +335,21 @@ class MockCompletionMixin:
                     status_code=422,
                     detail="Validation Error: completion requires processing_status=Completed and approval_status=Approved.",
                 )
-            draft = build_completion_draft_from_job(job, staff_name=str(body.get("staff_name") or ""))
             if completion and str(completion.get("completion_status")) == STATUS_FINALISED:
                 raise HTTPException(
                     status_code=422,
                     detail="Validation Error: Finalised completions require explicit reopen before regenerate.",
                 )
+            # Existing draft: do not regenerate — return current completion for edit/save.
             if completion:
-                self._check_completion_version(completion, body.get("expected_version"))
-                completion_id = str(completion["completion_id"])
-                version = int(completion.get("version") or 1) + 1
-                previous = str(completion.get("completion_status") or "")
-                created_by = str(completion.get("created_by") or actor)
-                created_at = completion.get("created_at") or now
-            else:
-                completion_id = f"CMP-{uuid.uuid4().hex[:8].upper()}"
-                version = 1
-                previous = ""
-                created_by = actor
-                created_at = now
+                return self._assemble_completion(completion, job, actor_role=actor_role, staff_id=staff_id)
+
+            draft = build_completion_draft_from_job(job, staff_name=str(body.get("staff_name") or ""))
+            completion_id = f"CMP-{uuid.uuid4().hex[:8].upper()}"
+            version = 1
+            previous = ""
+            created_by = actor
+            created_at = now
             labour = [
                 _normalise_labour(row, completion_id, job_sheet_id, now) for row in draft["labour_entries"]
             ]
@@ -353,8 +358,8 @@ class MockCompletionMixin:
                 for row in draft["machinery_entries"]
             ]
             materials = [
-                _normalise_material(row, completion_id, job_sheet_id, now)
-                for row in draft["material_entries"]
+                _normalise_material(row, completion_id, job_sheet_id, now, row_number=i + 1)
+                for i, row in enumerate(draft["material_entries"])
             ]
             totals = compute_completion_totals(labour, machinery)
             completion = {
@@ -442,8 +447,14 @@ class MockCompletionMixin:
                 )
             ]
             materials = [
-                _normalise_material(row, completion["completion_id"], job_sheet_id, now)
-                for row in (
+                _normalise_material(
+                    row,
+                    completion["completion_id"],
+                    job_sheet_id,
+                    now,
+                    row_number=i + 1,
+                )
+                for i, row in enumerate(
                     materials_src if materials_src is not None else completion.get("material_entries") or []
                 )
             ]

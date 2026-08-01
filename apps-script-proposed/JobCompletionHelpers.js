@@ -22,6 +22,49 @@ var FIELDOS_MAX_SHIFT_HOURS_ = 12;
 var FIELDOS_DEFAULT_TIMEZONE_ = "Australia/Sydney";
 
 /**
+ * Normalise material quantity for draft/update persistence.
+ * Accepts finite numbers, numeric strings ("2", "2.5", "0"), blank/whitespace,
+ * and "2 bags" → quantity 2 + unit bags (when unit empty).
+ * Never coerces arbitrary text to 0.
+ *
+ * @returns {{ok:boolean, quantity:number|null, unit:string, blank:boolean, error?:string, raw?:string}}
+ */
+function fieldosNormaliseMaterialQuantity_(raw, options) {
+  const opts = options || {};
+  const existingUnit = String(opts.unit || "");
+  if (raw === null || raw === undefined) {
+    return { ok: true, quantity: null, unit: existingUnit, blank: true };
+  }
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) {
+      return { ok: false, quantity: null, unit: existingUnit, error: "non_numeric", raw: String(raw) };
+    }
+    return { ok: true, quantity: raw, unit: existingUnit, blank: false };
+  }
+  const s = String(raw).trim();
+  if (!s) {
+    return { ok: true, quantity: null, unit: existingUnit, blank: true };
+  }
+  if (/^[+-]?\d+(\.\d+)?$/.test(s)) {
+    return { ok: true, quantity: Number(s), unit: existingUnit, blank: false };
+  }
+  const withUnit = /^([+-]?\d+(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9/%._-]*)\s*$/.exec(s);
+  if (withUnit) {
+    const qty = Number(withUnit[1]);
+    if (!Number.isFinite(qty)) {
+      return { ok: false, quantity: null, unit: existingUnit, error: "non_numeric", raw: s };
+    }
+    return {
+      ok: true,
+      quantity: qty,
+      unit: existingUnit || String(withUnit[2]),
+      blank: false
+    };
+  }
+  return { ok: false, quantity: null, unit: existingUnit, error: "non_numeric", raw: s };
+}
+
+/**
  * Spreadsheet timezone for clock formatting — avoids UTC hour shifts.
  */
 function fieldosSpreadsheetTimeZone_() {

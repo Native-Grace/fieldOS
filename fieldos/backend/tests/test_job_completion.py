@@ -663,3 +663,304 @@ def test_resolve_generate_completion_id_order() -> None:
         == "CMP-C"
     )
     assert AppsScriptJobRepository._resolve_generate_completion_id({"record_id": "CMP-E"}) == "CMP-E"
+
+
+@pytest.mark.asyncio
+async def test_update_minimal_success_reloads_via_get(monkeypatch) -> None:
+    from app.services.apps_script_repository import AppsScriptJobRepository
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        DATA_MODE="apps_script",
+        JWT_SECRET="test-secret-xxxxxxxxxxxxxxxx",
+        APPS_SCRIPT_WEBAPP_URL="https://script.google.com/macros/s/fake/exec",
+        APPS_SCRIPT_WEBHOOK_SECRET="secret",
+    )
+    repo = AppsScriptJobRepository(settings)
+
+    class FakeAS:
+        def __init__(self) -> None:
+            self.update_calls = 0
+            self.get_calls = 0
+
+        async def update_job_completion(self, body):
+            self.update_calls += 1
+            return {
+                "status": "Success",
+                "action": "update_job_completion",
+                "message": "Completion updated",
+                "record_id": "CMP-UPD",
+                "job_sheet_id": body["job_sheet_id"],
+                "data": {
+                    "completion_id": "CMP-UPD",
+                    "job_sheet_id": body["job_sheet_id"],
+                    "status": "Draft",
+                    "version": 2,
+                    "labour_count": 1,
+                    "machinery_count": 0,
+                    "material_count": 1,
+                    "updated": True,
+                },
+            }
+
+        async def get_job_completion(self, body):
+            self.get_calls += 1
+            return {
+                "status": "Success",
+                "data": {
+                    "completion": {
+                        "completion_id": "CMP-UPD",
+                        "job_sheet_id": body["job_sheet_id"],
+                        "completion_status": "Draft",
+                        "work_summary": "Updated",
+                        "version": 2,
+                    },
+                    "labour_entries": [{}],
+                    "machinery_entries": [],
+                    "material_entries": [{"quantity": 2.5}],
+                    "can_edit": True,
+                    "can_finalise": True,
+                    "can_reopen": False,
+                    "can_generate": True,
+                },
+            }
+
+    fake = FakeAS()
+    repo.apps_script = fake
+    out = await repo.acompletion_action(
+        "update_job_completion",
+        {
+            "job_sheet_id": "JS-1",
+            "staff_id": "STAFF-MGR001",
+            "actor_role": "manager",
+            "expected_version": 1,
+            "work_summary": "Updated",
+        },
+    )
+    assert out["completion"]["completion_id"] == "CMP-UPD"
+    assert out["completion"]["version"] == 2
+    assert fake.update_calls == 1
+    assert fake.get_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_update_transport_bounce_reconciles_via_get() -> None:
+    from app.services.apps_script import AppsScriptError
+    from app.services.apps_script_repository import AppsScriptJobRepository
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        DATA_MODE="apps_script",
+        JWT_SECRET="test-secret-xxxxxxxxxxxxxxxx",
+        APPS_SCRIPT_WEBAPP_URL="https://script.google.com/macros/s/fake/exec",
+        APPS_SCRIPT_WEBHOOK_SECRET="secret",
+    )
+    repo = AppsScriptJobRepository(settings)
+
+    class FakeAS:
+        def __init__(self) -> None:
+            self.update_calls = 0
+            self.get_calls = 0
+
+        async def update_job_completion(self, body):
+            self.update_calls += 1
+            raise AppsScriptError(
+                "Apps Script redirect host rejected (script.google.com).",
+                http_status=502,
+                code="apps_script_redirect_host_rejected",
+            )
+
+        async def get_job_completion(self, body):
+            self.get_calls += 1
+            return {
+                "status": "Success",
+                "data": {
+                    "completion": {
+                        "completion_id": "CMP-RECON-U",
+                        "job_sheet_id": body["job_sheet_id"],
+                        "completion_status": "Draft",
+                        "work_summary": "Persisted despite bounce",
+                        "version": 3,
+                    },
+                    "labour_entries": [],
+                    "machinery_entries": [],
+                    "material_entries": [{"item_name": "Mulch"}],
+                    "can_edit": True,
+                    "can_finalise": True,
+                    "can_reopen": False,
+                    "can_generate": True,
+                },
+            }
+
+    fake = FakeAS()
+    repo.apps_script = fake
+    out = await repo.acompletion_action(
+        "update_job_completion",
+        {
+            "job_sheet_id": "JS-C405837D",
+            "staff_id": "STAFF-MGR001",
+            "actor_role": "manager",
+            "expected_version": 2,
+            "work_summary": "Persisted despite bounce",
+            "material_entries": [{"item_name": "Mulch"}],
+        },
+    )
+    assert out["completion"]["completion_id"] == "CMP-RECON-U"
+    assert out["completion"]["version"] == 3
+    assert fake.update_calls == 1
+    assert fake.get_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_update_transport_bounce_missing_change_returns_502() -> None:
+    from fastapi import HTTPException
+
+    from app.services.apps_script import AppsScriptError
+    from app.services.apps_script_repository import AppsScriptJobRepository
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        DATA_MODE="apps_script",
+        JWT_SECRET="test-secret-xxxxxxxxxxxxxxxx",
+        APPS_SCRIPT_WEBAPP_URL="https://script.google.com/macros/s/fake/exec",
+        APPS_SCRIPT_WEBHOOK_SECRET="secret",
+    )
+    repo = AppsScriptJobRepository(settings)
+
+    class FakeAS:
+        def __init__(self) -> None:
+            self.update_calls = 0
+
+        async def update_job_completion(self, body):
+            self.update_calls += 1
+            raise AppsScriptError(
+                "Apps Script redirect host rejected (script.google.com).",
+                http_status=502,
+                code="apps_script_redirect_host_rejected",
+            )
+
+        async def get_job_completion(self, body):
+            return {
+                "status": "Success",
+                "data": {
+                    "completion": {
+                        "completion_id": "CMP-OLD",
+                        "job_sheet_id": body["job_sheet_id"],
+                        "completion_status": "Draft",
+                        "work_summary": "Old summary",
+                        "version": 2,
+                    },
+                    "labour_entries": [],
+                    "machinery_entries": [],
+                    "material_entries": [],
+                    "can_edit": True,
+                    "can_finalise": True,
+                    "can_reopen": False,
+                    "can_generate": True,
+                },
+            }
+
+    fake = FakeAS()
+    repo.apps_script = fake
+    with pytest.raises(HTTPException) as exc:
+        await repo.acompletion_action(
+            "update_job_completion",
+            {
+                "job_sheet_id": "JS-1",
+                "staff_id": "STAFF-MGR001",
+                "actor_role": "manager",
+                "expected_version": 2,
+                "work_summary": "New summary that never landed",
+            },
+        )
+    assert exc.value.status_code == 502
+    assert fake.update_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_update_409_returns_latest_version_safely() -> None:
+    from fastapi import HTTPException
+
+    from app.services.apps_script import AppsScriptError
+    from app.services.apps_script_repository import AppsScriptJobRepository
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        DATA_MODE="apps_script",
+        JWT_SECRET="test-secret-xxxxxxxxxxxxxxxx",
+        APPS_SCRIPT_WEBAPP_URL="https://script.google.com/macros/s/fake/exec",
+        APPS_SCRIPT_WEBHOOK_SECRET="secret",
+    )
+    repo = AppsScriptJobRepository(settings)
+
+    class FakeAS:
+        def __init__(self) -> None:
+            self.update_calls = 0
+            self.get_calls = 0
+
+        async def update_job_completion(self, body):
+            self.update_calls += 1
+            raise AppsScriptError(
+                "Conflict: completion version changed since you loaded this record.",
+                http_status=409,
+            )
+
+        async def get_job_completion(self, body):
+            self.get_calls += 1
+            return {
+                "status": "Success",
+                "data": {
+                    "completion": {
+                        "completion_id": "CMP-LIVE",
+                        "job_sheet_id": body["job_sheet_id"],
+                        "completion_status": "Draft",
+                        "version": 5,
+                    },
+                    "labour_entries": [],
+                    "machinery_entries": [],
+                    "material_entries": [],
+                    "can_edit": True,
+                    "can_finalise": True,
+                    "can_reopen": False,
+                    "can_generate": True,
+                },
+            }
+
+    fake = FakeAS()
+    repo.apps_script = fake
+    with pytest.raises(HTTPException) as exc:
+        await repo.acompletion_action(
+            "update_job_completion",
+            {
+                "job_sheet_id": "JS-1",
+                "staff_id": "STAFF-MGR001",
+                "actor_role": "manager",
+                "expected_version": 4,
+            },
+        )
+    assert exc.value.status_code == 409
+    detail = exc.value.detail
+    assert isinstance(detail, dict)
+    assert detail["version"] == 5
+    assert detail["completion_id"] == "CMP-LIVE"
+    assert fake.update_calls == 1
+    assert fake.get_calls == 1
+
+
+def test_normalise_material_quantity_helpers() -> None:
+    from app.services.completion_math import normalise_material_quantity
+
+    assert normalise_material_quantity(2)["quantity"] == 2.0
+    assert normalise_material_quantity("2.5")["quantity"] == 2.5
+    assert normalise_material_quantity(" 0 ")["quantity"] == 0.0
+    assert normalise_material_quantity("  ")["blank"] is True
+    split = normalise_material_quantity("2 bags")
+    assert split["ok"] is True
+    assert split["quantity"] == 2.0
+    assert split["unit"] == "bags"
+    assert normalise_material_quantity("several")["ok"] is False
+    assert normalise_material_quantity("N/A")["ok"] is False

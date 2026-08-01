@@ -19,6 +19,62 @@ STATUS_REOPENED = "Reopened"
 DEFAULT_TIMEZONE = "Australia/Sydney"
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+_QTY_ONLY_RE = re.compile(r"^[+-]?\d+(\.\d+)?$")
+_QTY_UNIT_RE = re.compile(r"^([+-]?\d+(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9/%._-]*)\s*$")
+
+
+def normalise_material_quantity(raw: Any, *, unit: str = "") -> dict[str, Any]:
+    """Normalise material quantity; never coerce arbitrary text to 0.
+
+    Accepts finite numbers, numeric strings, blank/whitespace, and
+    ``"2 bags"`` → quantity 2 + unit bags (when unit empty).
+    """
+    existing_unit = str(unit or "")
+    if raw is None:
+        return {"ok": True, "quantity": None, "unit": existing_unit, "blank": True}
+    if isinstance(raw, bool):
+        return {
+            "ok": False,
+            "quantity": None,
+            "unit": existing_unit,
+            "blank": False,
+            "error": "non_numeric",
+            "raw": str(raw),
+        }
+    if isinstance(raw, (int, float)):
+        qty = float(raw)
+        if qty != qty or qty in (float("inf"), float("-inf")):  # NaN / inf
+            return {
+                "ok": False,
+                "quantity": None,
+                "unit": existing_unit,
+                "blank": False,
+                "error": "non_numeric",
+                "raw": str(raw),
+            }
+        return {"ok": True, "quantity": qty, "unit": existing_unit, "blank": False}
+    s = str(raw).strip()
+    if not s:
+        return {"ok": True, "quantity": None, "unit": existing_unit, "blank": True}
+    if _QTY_ONLY_RE.match(s):
+        return {"ok": True, "quantity": float(s), "unit": existing_unit, "blank": False}
+    matched = _QTY_UNIT_RE.match(s)
+    if matched:
+        qty = float(matched.group(1))
+        return {
+            "ok": True,
+            "quantity": qty,
+            "unit": existing_unit or matched.group(2),
+            "blank": False,
+        }
+    return {
+        "ok": False,
+        "quantity": None,
+        "unit": existing_unit,
+        "blank": False,
+        "error": "non_numeric",
+        "raw": s,
+    }
 
 
 def _pad_clock(hours: int, minutes: int) -> str | None:
