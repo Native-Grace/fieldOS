@@ -1,0 +1,38 @@
+# Cursor/ChatGPT control pack — field-os
+# Do not enable merge/deploy/credentials/destructive without an explicit human decision.
+
+project: field-os
+repository: Native-Grace/fieldOS
+base_branch: main
+working_branch_prefix: agent/field-os-
+
+control_issue:
+  title: "Field-OS — Cursor/ChatGPT Control"
+  created: false
+  create_requested: false
+
+required_checks:
+  - backend-tests
+
+allowed_paths:
+  - fieldos/**
+  - docs/**
+  - .agents/field-os/**
+
+identities:
+  human_owner: Native-Grace
+  chatgpt_reviewer: Native-Grace
+  cursor_executor: "cursor[bot]"
+  github_codex-advisory: "chatgpt-codex-connector[bot]"
+
+capabilities:
+  merge: false
+  deploy: false
+  credentials: false
+  destructive: false
+
+source:
+  repository: Native-Grace/cursor-chat-control
+  commit: 0d9c79a
+  branch: cursor/configure-field-os-3c73
+  note: "Pack files were generated from the install CLI contract because Native-Grace/cursor-chat-control is private to this installation token."
