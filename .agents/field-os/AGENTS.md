@@ -20,7 +20,7 @@ This directory is the installed control pack for `Native-Grace/fieldOS`.
 
 - Base branch: `main`.
 - Implementation branches must use prefix `agent/field-os-`.
-- Do not open or comment on a control issue unless the human owner later asks. Title reserved: Field-OS — Cursor/ChatGPT Control.
+- Control issue: [#2 Field-OS — Cursor/ChatGPT Control](https://github.com/Native-Grace/fieldOS/issues/2).
 - Required status check(s):
 - `backend-tests`
 - Executor write scope (only these globs):

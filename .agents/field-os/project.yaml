@@ -8,8 +8,10 @@ working_branch_prefix: agent/field-os-
 
 control_issue:
   title: "Field-OS — Cursor/ChatGPT Control"
-  created: false
-  create_requested: false
+  created: true
+  create_requested: true
+  number: 2
+  url: https://github.com/Native-Grace/fieldOS/issues/2
 
 required_checks:
   - backend-tests
